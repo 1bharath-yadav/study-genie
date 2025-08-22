@@ -261,7 +261,6 @@ const EmptyState = () => (
 // =====================
 const StudyGenieApp = () => {
     // State management
-    const [currentUser] = useState(mockUser);
     const [progressData] = useState(mockProgressData);
     const [studyContent, setStudyContent] = useState(null);
     const [userPrompt, setUserPrompt] = useState("");
