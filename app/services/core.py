@@ -156,6 +156,3 @@ class LearningProgressService:
                 GROUP BY s.subject_id, s.subject_name
                 ORDER BY s.subject_name
             """
-
-
-*** End Patch
