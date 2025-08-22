@@ -23,7 +23,6 @@ dependencies = [
 	"langchain_community",
 	"langchain_google_genai",
 	"langchain[google-genai]",
-	"langchain_astradb",
 	"pytest>=8.4.1",
 	"python-dotenv>=1.0.0",
 	"pypdf>=6.0.0",

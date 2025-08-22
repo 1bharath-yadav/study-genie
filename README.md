@@ -48,7 +48,7 @@ StudyGenie addresses these challenges by:
          ▼                       ▼                       ▼
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   UI/UX Layer   │    │   Database      │    │   Vector Store  │
-│                 │    │   (PostgreSQL)  │    │   (AstraDB)     │
+│                 │    │   (PostgreSQL)  │    │   (FIASS)     │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
@@ -113,7 +113,7 @@ StudyGenie addresses these challenges by:
   - Student data management
   - Progress tracking
   - Content metadata
-- **AstraDB**: Vector database for semantic search
+- **FIASS**: Vector database for semantic search
   - Document embeddings
   - Similarity search
   - RAG retrieval
@@ -234,7 +234,7 @@ View dashboard → Analyze performance metrics → Identify weak areas → Recei
 - Text extraction from multiple formats
 - Chunking with overlap for context preservation
 - Embedding generation using Google AI
-- Vector storage in AstraDB
+- Vector storage in FIASS
 ```
 
 #### 2. **Retrieval System**
@@ -414,7 +414,7 @@ npm run dev              # Start development server
    - Context preservation
 
 3. Vector Storage
-   - AstraDB integration
+   - FIASS integration
    - Similarity search optimization
    - Metadata filtering
 
@@ -498,7 +498,7 @@ npm run dev              # Start development server
 - **React**: Industry-standard frontend framework with excellent ecosystem
 - **LangChain**: Most comprehensive framework for LLM applications
 - **PostgreSQL**: Reliable, scalable relational database with excellent Python support
-- **AstraDB**: Cloud-native vector database optimized for AI applications
+- **FIASS**: Cloud-native vector database optimized for AI applications
 
 ---
 
