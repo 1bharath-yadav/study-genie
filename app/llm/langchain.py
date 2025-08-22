@@ -5,11 +5,10 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
-# Core LangChain imports
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.documents import Document
+# Direct Google Generative AI client
+import google.generativeai as genai
+from google.generativeai.generative_models import GenerativeModel
+from google.generativeai.types import GenerationConfig
 
 # Document loaders
 from langchain_community.document_loaders import (
@@ -21,11 +20,13 @@ from langchain_community.document_loaders import (
 
 # Text processing
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_astradb import AstraDBVectorStore
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 # Retrieval and chains
 from langchain.retrievers import EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
 
 from dotenv import load_dotenv
 
@@ -33,8 +34,7 @@ load_dotenv()
 
 # Configuration
 google_api_key = os.getenv("GEMINI_API_KEY")
-astra_token = os.getenv("ASTRA_DB_APPLICATION_TOKEN")
-astra_api_endpoint = os.getenv("ASTRA_DB_API_ENDPOINT")
+genai.configure(api_key=google_api_key)
 
 logger = logging.getLogger("enhanced_rag_pipeline")
 logging.basicConfig(level=logging.INFO)
@@ -48,80 +48,96 @@ DEFAULT_ALPHA = 0.75
 LEARNING_CONTENT_SCHEMA = {
     "type": "object",
     "properties": {
-        # 15 flashcards
-        "flashcards": {
+        # Metadata extraction
+        "metadata": {
             "type": "object",
-            "description": "A set of exactly 15 flashcards summarizing important key concepts.",
-            "patternProperties": {
-                "^card([1-9]|1[0-5])$": {
-                    "type": "object",
-                    "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "Front side of the flashcard: a concise, focused question."
-                        },
-                        "answer": {
-                            "type": "string",
-                            "description": "Back side of the flashcard: a clear and short answer."
-                        },
-                        "key_concepts": {
-                            "type": "string",
-                            "description": "Topic or key concept covered in this flashcard."
-                        },
-                        "key_concepts_data": {
-                            "type": "string",
-                            "description": "Detailed information about the concept to reinforce understanding."
-                        },
-                        "difficulty": {
-                            "type": "string",
-                            "enum": ["Easy", "Medium", "Hard"],
-                            "description": "Difficulty level of the flashcard."
-                        }
-                    },
-                    "required": ["question", "answer", "difficulty"],
-                    "additionalProperties": False
+            "description": "Automatically extracted metadata about the content",
+            "properties": {
+                "subject_name": {
+                    "type": "string",
+                    "description": "The main subject/domain (e.g., Mathematics, Physics, Computer Science, History, etc.)"
+                },
+                "chapter_name": {
+                    "type": "string",
+                    "description": "The chapter or topic name from the content (e.g., Neural Networks, Calculus, World War II, etc.)"
+                },
+                "concept_name": {
+                    "type": "string",
+                    "description": "The specific concept being studied (e.g., Perceptron, Derivatives, Treaty of Versailles, etc.)"
+                },
+                "difficulty_level": {
+                    "type": "string",
+                    "enum": ["Easy", "Medium", "Hard"],
+                    "description": "Assessed difficulty level based on content complexity"
+                },
+                "estimated_study_time": {
+                    "type": "string",
+                    "description": "Estimated time needed to complete all materials (e.g., '2-3 hours', '45 minutes')"
                 }
             },
-            "additionalProperties": False,
-            "minProperties": 15,
-            "maxProperties": 15
+            "required": ["subject_name", "chapter_name", "concept_name", "difficulty_level"]
+        },
+
+        # 15 flashcards
+        "flashcards": {
+            "type": "array",
+            "description": "A set of exactly 15 flashcards summarizing important key concepts.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "Front side of the flashcard: a concise, focused question."
+                    },
+                    "answer": {
+                        "type": "string",
+                        "description": "Back side of the flashcard: a clear and short answer."
+                    },
+                    "key_concepts": {
+                        "type": "string",
+                        "description": "Topic or key concept covered in this flashcard."
+                    },
+                    "key_concepts_data": {
+                        "type": "string",
+                        "description": "Detailed information about the concept to reinforce understanding."
+                    },
+                    "difficulty": {
+                        "type": "string",
+                        "enum": ["Easy", "Medium", "Hard"],
+                        "description": "Difficulty level of the flashcard."
+                    }
+                },
+                "required": ["question", "answer", "difficulty"]
+            }
         },
 
         # 10 quiz questions
         "quiz": {
-            "type": "object",
+            "type": "array",
             "description": "A set of exactly 10 quiz questions for practice, each with options, correct answers, and explanations.",
-            "patternProperties": {
-                "^Q([1-9]|10)$": {
-                    "type": "object",
-                    "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "The quiz question."
-                        },
-                        "options": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "minItems": 3,
-                            "maxItems": 5,
-                            "description": "Multiple-choice options for the question."
-                        },
-                        "correct_answer": {
-                            "type": "string",
-                            "description": "The correct answer from the provided options."
-                        },
-                        "explanation": {
-                            "type": "string",
-                            "description": "Brief explanation for why the correct answer is right."
-                        }
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The quiz question."
                     },
-                    "required": ["question", "options", "correct_answer", "explanation"],
-                    "additionalProperties": False
-                }
-            },
-            "additionalProperties": False,
-            "minProperties": 10,
-            "maxProperties": 10
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Multiple-choice options for the question (3-5 options)."
+                    },
+                    "correct_answer": {
+                        "type": "string",
+                        "description": "The correct answer from the provided options."
+                    },
+                    "explanation": {
+                        "type": "string",
+                        "description": "Brief explanation for why the correct answer is right."
+                    }
+                },
+                "required": ["question", "options", "correct_answer", "explanation"]
+            }
         },
 
         # Match the following section
@@ -153,14 +169,12 @@ LEARNING_CONTENT_SCHEMA = {
                                 "description": "Correctly matched item from column B."
                             }
                         },
-                        "required": ["A", "B"],
-                        "additionalProperties": False
+                        "required": ["A", "B"]
                     },
                     "description": "Array of correct pairings between column A and column B."
                 }
             },
-            "required": ["columnA", "columnB", "mappings"],
-            "additionalProperties": False
+            "required": ["columnA", "columnB", "mappings"]
         },
 
         # Summary
@@ -176,8 +190,7 @@ LEARNING_CONTENT_SCHEMA = {
             "description": "List of learning objectives for the given topic."
         }
     },
-    "required": ["flashcards", "quiz", "match_the_following", "summary", "learning_objectives"],
-    "additionalProperties": False
+    "required": ["metadata", "flashcards", "quiz", "match_the_following", "summary", "learning_objectives"]
 }
 
 
@@ -258,9 +271,9 @@ async def perform_document_chunking(documents: List[Document]) -> List[Document]
     return chunks
 
 
-async def setup_vector_store_and_retriever(chunks: List[Document]) -> Tuple[AstraDBVectorStore, EnsembleRetriever]:
+async def setup_vector_store_and_retriever(chunks: List[Document]) -> Tuple[FAISS, EnsembleRetriever]:
     """
-    Setup vector store in AstraDB and create hybrid retriever
+    Setup vector store using FAISS and create hybrid retriever
     """
     # Initialize Gemini embeddings
     from pydantic import SecretStr
@@ -271,17 +284,9 @@ async def setup_vector_store_and_retriever(chunks: List[Document]) -> Tuple[Astr
             google_api_key) if google_api_key is not None else None
     )
 
-    # Create and populate AstraDB vector store
-    vector_store = AstraDBVectorStore(
-        embedding=embeddings,
-        collection_name="learning_documents",
-        token=astra_token,
-        api_endpoint=astra_api_endpoint,
-    )
-
-    # Add documents to vector store
-    await vector_store.aadd_documents(chunks)
-    logger.info(f"Stored {len(chunks)} chunks in AstraDB vector store")
+    # Create FAISS vector store
+    vector_store = FAISS.from_documents(chunks, embeddings)
+    logger.info(f"Stored {len(chunks)} chunks in FAISS vector store")
 
     # Setup vector retriever
     vector_retriever = vector_store.as_retriever(
@@ -337,44 +342,6 @@ async def enhance_retrieved_context(retrieved_docs: List[Document], all_chunks: 
     return enhanced_docs
 
 
-def create_learning_content_prompt() -> ChatPromptTemplate:
-    """
-    Create structured prompt for learning content generation
-    """
-    system_prompt = """You are an expert educational content creator specializing in personalized learning materials.
-
-Your task is to analyze the provided study material and create comprehensive learning content that helps students understand and retain the information effectively.
-
-Guidelines:
-- Create diverse flashcards covering key concepts, definitions, and applications
-- Design quiz questions that test understanding at different cognitive levels
-- Provide clear explanations that enhance learning
-- Ensure content is academically rigorous yet accessible
-- Focus on the most important concepts from the material
-
-Generate content that promotes active learning and knowledge retention."""
-
-    human_prompt = """Based on the following study materials, create comprehensive learning content:
-
-STUDY MATERIALS:
-{context}
-
-USER QUERY: {query}
-
-Please generate structured learning content including:
-1. Flashcards for key concepts and definitions
-2. Quiz questions with multiple choice answers and explanations
-3. A comprehensive summary of the main topics
-4. Clear learning objectives
-
-Ensure all content is educationally sound and directly related to the provided materials."""
-
-    return ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("human", human_prompt)
-    ])
-
-
 def format_context_for_llm(documents: List[Document]) -> str:
     """
     Format retrieved documents into a structured context string
@@ -397,44 +364,52 @@ Content: {content}
 
 async def generate_structured_response(context: str, query: str) -> Dict[str, Any]:
     """
-    Generate structured learning content using LangChain's structured output
+    Generate structured learning content using direct Gemini API with structured output
     """
-    # Initialize Gemini model
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro",
-        google_api_key=google_api_key,
-        temperature=0.2,
-        convert_system_message_to_human=True
-    )
+    try:
+        # Create the prompt
+        prompt = f"""
+        Based on the following educational content and user query, generate comprehensive study materials including flashcards, quiz questions, match-the-following exercises, and metadata.
 
-    # Create structured output chain using JSON schema
-    structured_llm = llm.with_structured_output(
-        schema=LEARNING_CONTENT_SCHEMA,
-        method="json_mode"
-    )
+        CONTENT:
+        {context}
 
-    # Create prompt template
-    prompt = create_learning_content_prompt()
+        USER QUERY:
+        {query}
 
-    # Build the chain
-    chain = (
-        {
-            "context": RunnablePassthrough(),
-            "query": RunnablePassthrough()
-        }
-        | prompt
-        | structured_llm
-    )
+        Please extract the following information and generate study materials:
+        1. Automatically identify the subject, chapter, and concept from the content
+        2. Create exactly 15 flashcards covering key concepts
+        3. Create exactly 10 quiz questions with multiple choice options
+        4. Create a match-the-following exercise
+        5. Provide a comprehensive summary
+        6. List learning objectives
+        7. Determine appropriate difficulty level
 
-    # Execute chain with input
+        Focus on creating high-quality educational content that helps with active learning and retention.
+        """
 
-    response = await chain.ainvoke({
-        "context": context,
-        "query": query
-    })
+        # Initialize Gemini model
+        model = GenerativeModel('gemini-2.0-flash-exp')
 
-    logger.info("Successfully generated structured learning content")
-    return response
+        # Generate content with structured output
+        response = model.generate_content(
+            prompt,
+            generation_config=GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=LEARNING_CONTENT_SCHEMA
+            )
+        )
+
+        # Parse the JSON response
+        result = json.loads(response.text)
+        logger.info(
+            "Successfully generated structured learning content using direct Gemini API")
+        return result
+
+    except Exception as e:
+        logger.error(f"Error generating structured response: {str(e)}")
+        raise
 
 
 # Main pipeline function

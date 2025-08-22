@@ -3,9 +3,10 @@ import { useDropzone } from 'react-dropzone';
 import { motion } from 'framer-motion';
 import { Upload, FileText, Image, File, X, Check } from 'lucide-react';
 import { fileUtils } from '../utils';
+import { apiService } from '../services/api';
 import toast from 'react-hot-toast';
 
-const FileUpload = ({ onFileProcessed, isProcessing = false, className = '' }) => {
+const FileUpload = ({ onFileProcessed, isProcessing = false, className = '', studentId, subjectName, chapterName }) => {
     const [uploadedFiles, setUploadedFiles] = useState([]);
 
     const onDrop = useCallback(async (acceptedFiles) => {
@@ -26,68 +27,53 @@ const FileUpload = ({ onFileProcessed, isProcessing = false, className = '' }) =
             setUploadedFiles([fileWithId]);
             toast.success(`File "${file.name}" uploaded successfully!`);
 
-            // Extract text content from file
-            const extractedText = await extractTextFromFile(file);
+            // Upload file and get LLM response from backend
+            const response = await apiService.processLLMResponse({
+                student_id: studentId,
+                subject_name: subjectName || 'General',
+                chapter_name: chapterName || 'Chapter 1',
+                concept_name: file.name.split('.')[0], // Use filename as concept
+                llm_response: {
+                    flashcards: {},
+                    quiz: {},
+                    summary: "File uploaded successfully",
+                    learning_objectives: []
+                },
+                user_query: `Process uploaded file: ${file.name}`
+            });
 
             // Update file status
             setUploadedFiles(prev => prev.map(f =>
                 f.id === fileWithId.id
-                    ? { ...f, status: 'completed', extractedText }
+                    ? { ...f, status: 'completed', response }
                     : f
             ));
 
-            // Call parent callback with extracted content
+            // Call parent callback with response
             onFileProcessed({
                 fileName: file.name,
                 fileType: file.type,
-                content: extractedText,
+                fileInfo: response.file_info,
+                llmResponse: response.llm_response,
+                processedResponse: response.processed_response,
                 metadata: {
                     size: file.size,
                     type: file.type
                 }
             });
 
+            toast.success('File processed and study materials generated!');
+
         } catch (error) {
             console.error('Error processing file:', error);
-            toast.error('Failed to process file');
+            toast.error(`Failed to process file: ${error.message}`);
             setUploadedFiles(prev => prev.map(f =>
                 f.id === fileWithId.id
                     ? { ...f, status: 'error' }
                     : f
             ));
         }
-    }, [onFileProcessed]);
-
-    const extractTextFromFile = async (file) => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-
-            reader.onload = (event) => {
-                const content = event.target.result;
-
-                if (file.type === 'text/plain') {
-                    resolve(content);
-                } else if (file.type === 'application/pdf') {
-                    // For PDF, return placeholder text - in real app, use pdf.js
-                    resolve(`PDF Content: ${file.name}\n\nThis is placeholder text for PDF processing. In a real implementation, you would use libraries like pdf.js to extract text from PDF files.`);
-                } else if (file.type.startsWith('image/')) {
-                    // For images, return placeholder - in real app, use OCR service
-                    resolve(`Image Content: ${file.name}\n\nThis is placeholder text for image OCR processing. In a real implementation, you would send this image to your backend OCR service (Tesseract/Google Vision) to extract text.`);
-                } else {
-                    // Try to read as text
-                    resolve(content || 'Unable to extract text from this file type');
-                }
-            };
-
-            reader.onerror = () => reject(new Error('Failed to read file'));
-
-            if (file.type.startsWith('image/')) {
-                reader.readAsDataURL(file);
-            } else {
-                reader.readAsText(file);
-            }
-        });
-    };
+    }, [onFileProcessed, studentId, subjectName, chapterName]);
 
     const removeFile = (fileId) => {
         setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
@@ -97,16 +83,16 @@ const FileUpload = ({ onFileProcessed, isProcessing = false, className = '' }) =
         onDrop,
         accept: {
             'text/plain': ['.txt'],
-            'application/pdf': ['.pdf'],
-            'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.bmp']
+            'text/markdown': ['.md'],
+            'application/pdf': ['.pdf']
         },
         maxFiles: 1,
         disabled: isProcessing
     });
 
     const getFileIcon = (type) => {
-        if (type.startsWith('image/')) return <Image className="w-8 h-8" />;
         if (type === 'application/pdf') return <FileText className="w-8 h-8" />;
+        if (type === 'text/plain' || type === 'text/markdown') return <File className="w-8 h-8" />;
         return <File className="w-8 h-8" />;
     };
 
@@ -158,7 +144,7 @@ const FileUpload = ({ onFileProcessed, isProcessing = false, className = '' }) =
                     </h3>
 
                     <p className="text-gray-500 mb-4">
-                        Drag and drop or click to upload PDF, images, or text files
+                        Drag and drop or click to upload PDF, text, or markdown files
                     </p>
 
                     <div className="flex justify-center space-x-4 text-sm text-gray-400">
@@ -166,10 +152,10 @@ const FileUpload = ({ onFileProcessed, isProcessing = false, className = '' }) =
                             <FileText className="w-4 h-4 mr-1" /> PDF
                         </span>
                         <span className="flex items-center">
-                            <Image className="w-4 h-4 mr-1" /> Images
+                            <File className="w-4 h-4 mr-1" /> TXT
                         </span>
                         <span className="flex items-center">
-                            <File className="w-4 h-4 mr-1" /> Text
+                            <File className="w-4 h-4 mr-1" /> MD
                         </span>
                     </div>
                 </motion.div>
