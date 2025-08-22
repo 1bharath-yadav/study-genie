@@ -25,6 +25,8 @@ dependencies = [
 	"langchain[google-genai]",
 	"langchain_astradb",
 	"pytest>=8.4.1",
+	"psycopg[binary]>=3.2.9",
+	"psycopg2>=2.9.10",
 ]
 
 [project.optional-dependencies]
