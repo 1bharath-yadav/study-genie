@@ -160,7 +160,7 @@ const Quiz = ({ questions, onComplete, className = '' }) => {
                     >
                         {/* Question */}
                         <div className="mb-6">
-                            <h3 className="text-xl font-semibold text-gray-800 mb-4">
+                            <h3 className="text-xl font-bold text-gray-900 mb-4 leading-relaxed">
                                 {currentQuestion.question}
                             </h3>
                         </div>
@@ -192,7 +192,7 @@ const Quiz = ({ questions, onComplete, className = '' }) => {
                                         whileTap={!showExplanation ? { scale: 0.98 } : {}}
                                     >
                                         <div className="flex items-center justify-between">
-                                            <span className="flex-1">{option}</span>
+                                            <span className="flex-1 text-gray-800 font-medium text-base leading-relaxed">{option}</span>
                                             {showExplanation && (
                                                 <div className="ml-2">
                                                     {shouldHighlight && <Check className="w-5 h-5 text-green-500" />}
