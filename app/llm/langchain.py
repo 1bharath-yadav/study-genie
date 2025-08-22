@@ -45,60 +45,138 @@ DEFAULT_CHUNK_OVERLAP = 200
 DEFAULT_TOP_K = 6
 DEFAULT_ALPHA = 0.75
 
-# JSON Schema for structured output
 LEARNING_CONTENT_SCHEMA = {
     "type": "object",
     "properties": {
+        # 15 flashcards
         "flashcards": {
             "type": "object",
+            "description": "A set of exactly 15 flashcards summarizing important key concepts.",
             "patternProperties": {
-                "^card\\d+$": {
+                "^card([1-9]|1[0-5])$": {
                     "type": "object",
                     "properties": {
-                        "question": {"type": "string", "description": "The flashcard question"},
-                        "answer": {"type": "string", "description": "The flashcard answer"},
-                        "difficulty": {"type": "string", "enum": ["Easy", "Medium", "Hard"]}
+                        "question": {
+                            "type": "string",
+                            "description": "Front side of the flashcard: a concise, focused question."
+                        },
+                        "answer": {
+                            "type": "string",
+                            "description": "Back side of the flashcard: a clear and short answer."
+                        },
+                        "key_concepts": {
+                            "type": "string",
+                            "description": "Topic or key concept covered in this flashcard."
+                        },
+                        "key_concepts_data": {
+                            "type": "string",
+                            "description": "Detailed information about the concept to reinforce understanding."
+                        },
+                        "difficulty": {
+                            "type": "string",
+                            "enum": ["Easy", "Medium", "Hard"],
+                            "description": "Difficulty level of the flashcard."
+                        }
                     },
                     "required": ["question", "answer", "difficulty"],
                     "additionalProperties": False
                 }
             },
-            "additionalProperties": False
+            "additionalProperties": False,
+            "minProperties": 15,
+            "maxProperties": 15
         },
+
+        # 10 quiz questions
         "quiz": {
             "type": "object",
+            "description": "A set of exactly 10 quiz questions for practice, each with options, correct answers, and explanations.",
             "patternProperties": {
-                "^Q\\d+$": {
+                "^Q([1-9]|10)$": {
                     "type": "object",
                     "properties": {
-                        "question": {"type": "string", "description": "The quiz question"},
+                        "question": {
+                            "type": "string",
+                            "description": "The quiz question."
+                        },
                         "options": {
                             "type": "array",
                             "items": {"type": "string"},
                             "minItems": 3,
                             "maxItems": 5,
-                            "description": "Multiple choice options"
+                            "description": "Multiple-choice options for the question."
                         },
-                        "correct_answer": {"type": "string", "description": "The correct answer"},
-                        "explanation": {"type": "string", "description": "Explanation of the correct answer"}
+                        "correct_answer": {
+                            "type": "string",
+                            "description": "The correct answer from the provided options."
+                        },
+                        "explanation": {
+                            "type": "string",
+                            "description": "Brief explanation for why the correct answer is right."
+                        }
                     },
                     "required": ["question", "options", "correct_answer", "explanation"],
                     "additionalProperties": False
                 }
             },
+            "additionalProperties": False,
+            "minProperties": 10,
+            "maxProperties": 10
+        },
+
+        # Match the following section
+        "match_the_following": {
+            "type": "object",
+            "description": "A 'match the following' exercise with two columns (A and B) and correct mappings.",
+            "properties": {
+                "columnA": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of terms, definitions, or entities in column A."
+                },
+                "columnB": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of corresponding matches for items in column A."
+                },
+                "mappings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "A": {
+                                "type": "string",
+                                "description": "Item from column A."
+                            },
+                            "B": {
+                                "type": "string",
+                                "description": "Correctly matched item from column B."
+                            }
+                        },
+                        "required": ["A", "B"],
+                        "additionalProperties": False
+                    },
+                    "description": "Array of correct pairings between column A and column B."
+                }
+            },
+            "required": ["columnA", "columnB", "mappings"],
             "additionalProperties": False
         },
+
+        # Summary
         "summary": {
             "type": "string",
-            "description": "Comprehensive summary of key concepts"
+            "description": "Comprehensive, concise summary of all key concepts covered."
         },
+
+        # Learning objectives
         "learning_objectives": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "List of learning objectives"
+            "description": "List of learning objectives for the given topic."
         }
     },
-    "required": ["flashcards", "quiz", "summary", "learning_objectives"],
+    "required": ["flashcards", "quiz", "match_the_following", "summary", "learning_objectives"],
     "additionalProperties": False
 }
 

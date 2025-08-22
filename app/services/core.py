@@ -156,3 +156,83 @@ class LearningProgressService:
                 GROUP BY s.subject_id, s.subject_name
                 ORDER BY s.subject_name
             """
+
+            subject_progress = await conn.fetch(subject_query, student_id)
+
+            concept_query = """
+                SELECT
+                    scp.concept_id, c.concept_name, scp.status, scp.mastery_score,
+                    scp.attempts_count, scp.correct_answers, scp.total_questions,
+                    scp.last_practiced, scp.first_learned
+                FROM student_concept_progress scp
+                JOIN concepts c ON scp.concept_id = c.concept_id
+                WHERE scp.student_id = $1
+            """
+
+            if subject_id:
+                concept_query += " AND c.chapter_id IN (SELECT chapter_id FROM chapters WHERE subject_id = $2)"
+                concept_progress = await conn.fetch(concept_query, student_id, subject_id)
+            else:
+                concept_progress = await conn.fetch(concept_query, student_id)
+
+            recent_activity_query = """
+                SELECT activity_type, details, created_at
+                FROM learning_activities
+                WHERE student_id = $1
+                ORDER BY created_at DESC
+                LIMIT 20
+            """
+
+            recent_activity = await conn.fetch(recent_activity_query, student_id)
+
+            return {
+                'student_id': student_id,
+                'overall_progress': dict(overall_stats) if overall_stats else {},
+                'subject_progress': [dict(row) for row in subject_progress],
+                'concept_progress': [
+                    ConceptProgress(
+                        concept_id=row['concept_id'],
+                        concept_name=row['concept_name'],
+                        status=ConceptStatus(row['status']),
+                        mastery_score=row['mastery_score'] or 0.0,
+                        attempts_count=row['attempts_count'] or 0,
+                        correct_answers=row['correct_answers'] or 0,
+                        total_questions=row['total_questions'] or 0,
+                        last_practiced=row['last_practiced'],
+                        first_learned=row['first_learned']
+                    ) for row in concept_progress
+                ],
+                'recent_activity': [dict(row) for row in recent_activity],
+                'total_concepts': overall_stats['total_concepts'] if overall_stats else 0,
+                'mastered_concepts': overall_stats['mastered_concepts'] if overall_stats else 0,
+                'weak_concepts': overall_stats['weak_concepts'] if overall_stats else 0
+            }
+
+    async def _ensure_student_enrollment(self, student_id: int, subject_id: int):
+        """Ensure student is enrolled in a subject (creates enrollment if missing)."""
+        async with self.db.pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO student_subjects (student_id, subject_id) VALUES ($1, $2) ON CONFLICT (student_id, subject_id) DO NOTHING""",
+                student_id, subject_id
+            )
+
+    async def _analyze_and_update_progress(self, student_id: int, concept_id: int,
+                                           llm_response: LLMResponseContent):
+        """Analyze LLM response to derive engagement score and update concept progress."""
+        engagement_score = 50
+
+        if getattr(llm_response, 'flashcards', None):
+            engagement_score += len(llm_response.flashcards) * 5
+        if getattr(llm_response, 'quiz', None):
+            engagement_score += len(llm_response.quiz) * 10
+        if getattr(llm_response, 'summary', None):
+            engagement_score += min(len(llm_response.summary.split()) // 10, 20)
+        if getattr(llm_response, 'learning_objectives', None):
+            engagement_score += len(llm_response.learning_objectives) * 3
+
+        engagement_score = min(engagement_score, 100)
+
+        # Treat as percentage out of 100
+        await self.progress_tracker.update_concept_progress(
+            student_id, concept_id, correct_answers=int(engagement_score), total_questions=100
+        )
