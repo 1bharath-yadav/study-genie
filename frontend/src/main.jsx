@@ -942,18 +942,10 @@ const StudyGenieWow = () => {
                 ...p,
                 { type: "file", content: `File uploaded: ${fileData.fileName}`, timestamp: new Date() },
             ]);
-            const metadata = {
-                subject: "General Studies",
-                chapter: "Chapter 1",
-                concept: fileData.fileName.replace(/\.[^/.]+$/, ""),
-                difficulty: "Medium",
-            };
-            const response = await apiService.processFileContent(
-                fileData.content,
-                currentUser.student_id,
-                metadata
-            );
-            const content = response.enhanced_response || response.llm_response;
+
+            // Use the enhanced response directly from the upload
+            const content = fileData.enhancedResponse;
+
             const mapped = {
                 flashcards: Object.entries(content.flashcards || {}).map(([id, card]) => ({
                     id,
@@ -974,6 +966,7 @@ const StudyGenieWow = () => {
                 summary: content.summary,
                 learningObjectives: content.learning_objectives || [],
             };
+
             setStudyContent(mapped);
             setChatHistory((p) => [
                 ...p,

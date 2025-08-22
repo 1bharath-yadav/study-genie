@@ -27,20 +27,12 @@ const FileUpload = ({ onFileProcessed, isProcessing = false, className = '', stu
             setUploadedFiles([fileWithId]);
             toast.success(`File "${file.name}" uploaded successfully!`);
 
-            // Upload file and get LLM response from backend
-            const response = await apiService.processLLMResponse({
-                student_id: studentId,
-                subject_name: subjectName || 'General',
-                chapter_name: chapterName || 'Chapter 1',
-                concept_name: file.name.split('.')[0], // Use filename as concept
-                llm_response: {
-                    flashcards: {},
-                    quiz: {},
-                    summary: "File uploaded successfully",
-                    learning_objectives: []
-                },
-                user_query: `Process uploaded file: ${file.name}`
-            });
+            // Upload file using the simple upload endpoint
+            const response = await apiService.uploadFileSimple(
+                file,
+                studentId,
+                `Generate comprehensive study materials from this file: ${file.name}`
+            );
 
             // Update file status
             setUploadedFiles(prev => prev.map(f =>
@@ -53,9 +45,10 @@ const FileUpload = ({ onFileProcessed, isProcessing = false, className = '', stu
             onFileProcessed({
                 fileName: file.name,
                 fileType: file.type,
-                fileInfo: response.file_info,
-                llmResponse: response.llm_response,
-                processedResponse: response.processed_response,
+                enhancedResponse: response.enhanced_response,
+                trackingMetadata: response.tracking_metadata,
+                createdEntities: response.created_entities,
+                message: response.message,
                 metadata: {
                     size: file.size,
                     type: file.type
