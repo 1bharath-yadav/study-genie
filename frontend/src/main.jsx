@@ -172,78 +172,61 @@ const StudyGenie = () => {
         }
     };
 
-    const handleFileProcessed = async (fileData) => {
+    const handleFileProcessed = async (files) => {
+        if (!userPrompt.trim()) {
+            toast.error("Please enter a prompt to provide context for the files.");
+            return;
+        }
         try {
             setIsProcessing(true);
-
-            // Add to chat history
             setChatHistory(prev => [...prev, {
                 type: 'file',
-                content: `File uploaded: ${fileData.fileName}`,
+                content: `Processing ${files.length} file(s) with prompt: "${userPrompt}"`,
                 timestamp: new Date()
             }]);
 
-            // Extract metadata from filename or use defaults
-            const metadata = {
-                subject: 'General Studies',
-                chapter: 'Chapter 1',
-                concept: fileData.fileName.replace(/\.[^/.]+$/, ''), // Remove extension
-                difficulty: 'Medium'
-            };
+            const response = await apiService.generateStudyMaterial(files, userPrompt);
 
-            // Process file content with backend
-            const response = await apiService.processFileContent(
-                fileData.content,
-                currentUser.student_id,
-                metadata
-            );
+            const content = response; // The new API returns the content directly
 
-            // Create study content from LLM response
-            const content = response.enhanced_response || response.llm_response;
-
-            // Convert backend response format to frontend format
-            const studyContent = {
-                flashcards: Object.entries(content.flashcards || {}).map(([key, card]) => ({
-                    id: key,
-                    question: card.question,
-                    answer: card.answer,
-                    key_concepts: card.key_concepts,
-                    key_concepts_data: card.key_concepts_data,
-                    difficulty: card.difficulty
-                })),
-                quiz: Object.entries(content.quiz || {}).map(([key, question]) => ({
-                    id: key,
-                    question: question.question,
-                    options: question.options,
-                    correct_answer: question.correct_answer,
-                    explanation: question.explanation
-                })),
+            const formattedContent = {
+                flashcards: Object.values(content.flashcards || {}),
+                quiz: Object.values(content.quiz || {}),
                 matchTheFollowing: content.match_the_following,
                 summary: content.summary,
                 learningObjectives: content.learning_objectives || []
             };
 
-            setStudyContent(studyContent);
+            setStudyContent(formattedContent);
 
-            // Add success message to chat
+            // Track progress
+            const requestData = {
+                student_id: currentUser.student_id,
+                subject_name: "Generated Subject",
+                chapter_name: "Generated Chapter",
+                concept_name: userPrompt,
+                llm_response: content,
+                user_query: userPrompt,
+            };
+            await apiService.processLLMResponse(requestData);
+
+
             setChatHistory(prev => [...prev, {
                 type: 'success',
                 content: 'Study content generated successfully! Check the sections on the right.',
                 timestamp: new Date()
             }]);
 
-            // Update progress
             await loadUserProgress(currentUser.student_id);
-
             toast.success('Study content generated successfully!');
         } catch (error) {
             console.error('File processing error:', error);
             setChatHistory(prev => [...prev, {
                 type: 'error',
-                content: 'Failed to process file. Please try again.',
+                content: `Failed to process files: ${error.message}`,
                 timestamp: new Date()
             }]);
-            toast.error('Failed to process file. Please try again.');
+            toast.error(`Failed to process files: ${error.message}`);
         } finally {
             setIsProcessing(false);
         }
@@ -254,90 +237,38 @@ const StudyGenie = () => {
 
         try {
             setIsProcessing(true);
-
-            // Add user message to chat
             setChatHistory(prev => [...prev, {
                 type: 'user',
                 content: userPrompt,
                 timestamp: new Date()
             }]);
 
-            // Create mock LLM response based on prompt
-            const mockLLMResponse = {
-                flashcards: {
-                    card1: {
-                        question: `What is the main concept about: ${userPrompt}?`,
-                        answer: "Based on your query, here's a comprehensive answer.",
-                        key_concepts: "Core concept identification",
-                        key_concepts_data: "Detailed analysis of the main topics",
-                        difficulty: "Medium"
-                    },
-                    // Add more cards...
-                },
-                quiz: {
-                    Q1: {
-                        question: `Which statement best describes: ${userPrompt}?`,
-                        options: ["Option A", "Option B", "Option C", "Option D"],
-                        correct_answer: "Option A",
-                        explanation: "This is correct because..."
-                    },
-                    // Add more questions...
-                },
-                match_the_following: {
-                    columnA: ["Term 1", "Term 2", "Term 3"],
-                    columnB: ["Definition 1", "Definition 2", "Definition 3"],
-                    mappings: [
-                        { A: "Term 1", B: "Definition 1" },
-                        { A: "Term 2", B: "Definition 2" },
-                        { A: "Term 3", B: "Definition 3" }
-                    ]
-                },
-                summary: `This is a comprehensive summary based on your query: ${userPrompt}`,
-                learning_objectives: [
-                    "Understand the main concepts presented",
-                    "Apply knowledge in practical scenarios",
-                    "Analyze and synthesize information"
-                ]
-            };
+            // Since there are no files, we pass an empty array.
+            const response = await apiService.generateStudyMaterial([], userPrompt);
 
-            const requestData = {
-                student_id: currentUser.student_id,
-                subject_name: "General Studies",
-                chapter_name: "Chapter 1",
-                concept_name: "User Query",
-                llm_response: mockLLMResponse,
-                user_query: userPrompt,
-                difficulty_level: "Medium"
-            };
+            const content = response;
 
-            const response = await apiService.processLLMResponse(requestData);
-            const content = response.enhanced_response || response.llm_response;
-
-            // Convert backend response format to frontend format
-            const studyContent = {
-                flashcards: Object.entries(content.flashcards || {}).map(([key, card]) => ({
-                    id: key,
-                    question: card.question,
-                    answer: card.answer,
-                    key_concepts: card.key_concepts,
-                    key_concepts_data: card.key_concepts_data,
-                    difficulty: card.difficulty
-                })),
-                quiz: Object.entries(content.quiz || {}).map(([key, question]) => ({
-                    id: key,
-                    question: question.question,
-                    options: question.options,
-                    correct_answer: question.correct_answer,
-                    explanation: question.explanation
-                })),
+            const formattedContent = {
+                flashcards: Object.values(content.flashcards || {}),
+                quiz: Object.values(content.quiz || {}),
                 matchTheFollowing: content.match_the_following,
                 summary: content.summary,
                 learningObjectives: content.learning_objectives || []
             };
 
-            setStudyContent(studyContent);
+            setStudyContent(formattedContent);
 
-            // Add AI response to chat
+            // Track progress
+            const requestData = {
+                student_id: currentUser.student_id,
+                subject_name: "Generated Subject",
+                chapter_name: "Generated Chapter",
+                concept_name: userPrompt,
+                llm_response: content,
+                user_query: userPrompt,
+            };
+            await apiService.processLLMResponse(requestData);
+
             setChatHistory(prev => [...prev, {
                 type: 'ai',
                 content: 'Study content generated based on your query! Check the sections on the right.',
@@ -345,19 +276,16 @@ const StudyGenie = () => {
             }]);
 
             setUserPrompt('');
-
-            // Update progress
             await loadUserProgress(currentUser.student_id);
-
             toast.success('Study content generated successfully!');
         } catch (error) {
             console.error('Prompt processing error:', error);
             setChatHistory(prev => [...prev, {
                 type: 'error',
-                content: 'Failed to process your query. Please try again.',
+                content: `Failed to process your query: ${error.message}`,
                 timestamp: new Date()
             }]);
-            toast.error('Failed to process your query. Please try again.');
+            toast.error(`Failed to process your query: ${error.message}`);
         } finally {
             setIsProcessing(false);
         }

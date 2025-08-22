@@ -8,86 +8,23 @@ import toast from 'react-hot-toast';
 const FileUpload = ({ onFileProcessed, isProcessing = false, className = '' }) => {
     const [uploadedFiles, setUploadedFiles] = useState([]);
 
-    const onDrop = useCallback(async (acceptedFiles) => {
-        const file = acceptedFiles[0]; // Take first file only
-        if (!file) return;
+    const onDrop = useCallback((acceptedFiles) => {
+        const files = acceptedFiles;
+        if (!files || files.length === 0) return;
 
-        try {
-            // Add file to state immediately
-            const fileWithId = {
-                id: Date.now(),
-                file,
-                name: file.name,
-                size: file.size,
-                type: file.type,
-                status: 'processing'
-            };
+        const filesWithStatus = files.map(file => ({
+            id: Date.now() + Math.random(),
+            file,
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            status: 'pending'
+        }));
 
-            setUploadedFiles([fileWithId]);
-            toast.success(`File "${file.name}" uploaded successfully!`);
-
-            // Extract text content from file
-            const extractedText = await extractTextFromFile(file);
-
-            // Update file status
-            setUploadedFiles(prev => prev.map(f =>
-                f.id === fileWithId.id
-                    ? { ...f, status: 'completed', extractedText }
-                    : f
-            ));
-
-            // Call parent callback with extracted content
-            onFileProcessed({
-                fileName: file.name,
-                fileType: file.type,
-                content: extractedText,
-                metadata: {
-                    size: file.size,
-                    type: file.type
-                }
-            });
-
-        } catch (error) {
-            console.error('Error processing file:', error);
-            toast.error('Failed to process file');
-            setUploadedFiles(prev => prev.map(f =>
-                f.id === fileWithId.id
-                    ? { ...f, status: 'error' }
-                    : f
-            ));
-        }
+        setUploadedFiles(filesWithStatus);
+        toast.success(`${files.length} file(s) ready for processing.`);
+        onFileProcessed(files); // Pass the raw files to the parent
     }, [onFileProcessed]);
-
-    const extractTextFromFile = async (file) => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-
-            reader.onload = (event) => {
-                const content = event.target.result;
-
-                if (file.type === 'text/plain') {
-                    resolve(content);
-                } else if (file.type === 'application/pdf') {
-                    // For PDF, return placeholder text - in real app, use pdf.js
-                    resolve(`PDF Content: ${file.name}\n\nThis is placeholder text for PDF processing. In a real implementation, you would use libraries like pdf.js to extract text from PDF files.`);
-                } else if (file.type.startsWith('image/')) {
-                    // For images, return placeholder - in real app, use OCR service
-                    resolve(`Image Content: ${file.name}\n\nThis is placeholder text for image OCR processing. In a real implementation, you would send this image to your backend OCR service (Tesseract/Google Vision) to extract text.`);
-                } else {
-                    // Try to read as text
-                    resolve(content || 'Unable to extract text from this file type');
-                }
-            };
-
-            reader.onerror = () => reject(new Error('Failed to read file'));
-
-            if (file.type.startsWith('image/')) {
-                reader.readAsDataURL(file);
-            } else {
-                reader.readAsText(file);
-            }
-        });
-    };
 
     const removeFile = (fileId) => {
         setUploadedFiles(prev => prev.filter(f => f.id !== fileId));

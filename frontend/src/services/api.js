@@ -143,92 +143,24 @@ export const apiService = {
         }
     },
 
-    // File Upload Mock (since your backend doesn't have file upload endpoint yet)
-    processFileContent: async (fileContent, studentId, metadata) => {
-        // This would typically be a file upload endpoint
-        // For now, we'll simulate processing the extracted text
-        const mockLLMResponse = {
-            flashcards: {
-                card1: {
-                    question: "What is the main concept discussed in the uploaded content?",
-                    answer: "Based on the uploaded content analysis",
-                    key_concepts: "Core concept identification",
-                    key_concepts_data: "Detailed analysis of the main topics",
-                    difficulty: "Medium"
-                },
-                // Add more cards based on content...
-            },
-            quiz: {
-                Q1: {
-                    question: "Which statement best describes the content?",
-                    options: ["Option A", "Option B", "Option C", "Option D"],
-                    correct_answer: "Option A",
-                    explanation: "This is correct because..."
-                },
-                // Add more questions...
-            },
-            match_the_following: {
-                columnA: ["Term 1", "Term 2", "Term 3"],
-                columnB: ["Definition 1", "Definition 2", "Definition 3"],
-                mappings: [
-                    { A: "Term 1", B: "Definition 1" },
-                    { A: "Term 2", B: "Definition 2" },
-                    { A: "Term 3", B: "Definition 3" }
-                ]
-            },
-            summary: "This is a comprehensive summary of the uploaded content covering key concepts and learning objectives.",
-            learning_objectives: [
-                "Understand the main concepts presented",
-                "Apply knowledge in practical scenarios",
-                "Analyze and synthesize information"
-            ]
-        };
-
-        const requestData = {
-            student_id: studentId,
-            subject_name: metadata.subject || "General Studies",
-            chapter_name: metadata.chapter || "Chapter 1",
-            concept_name: metadata.concept || "Core Concepts",
-            llm_response: mockLLMResponse,
-            user_query: `Process uploaded content: ${fileContent.substring(0, 100)}...`,
-            difficulty_level: metadata.difficulty || "Medium"
-        };
-
-        return await this.processLLMResponse(requestData);
-    },
-
-    // Utility function to extract text from different file types
-    extractTextFromFile: async (file) => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-
-            reader.onload = (event) => {
-                const content = event.target.result;
-
-                if (file.type === 'text/plain') {
-                    resolve(content);
-                } else if (file.type === 'application/pdf') {
-                    // For PDF, you'd typically use a library like pdf.js
-                    // For now, return a placeholder
-                    resolve("PDF content extraction would require additional libraries like pdf.js");
-                } else if (file.type.startsWith('image/')) {
-                    // For images, you'd typically use OCR
-                    // For now, return a placeholder
-                    resolve("Image OCR processing would require integration with your backend OCR service");
-                } else {
-                    resolve(content);
-                }
-            };
-
-            reader.onerror = () => reject(new Error('Failed to read file'));
-
-            if (file.type.startsWith('image/')) {
-                reader.readAsDataURL(file);
-            } else {
-                reader.readAsText(file);
-            }
+    generateStudyMaterial: async (files, userPrompt) => {
+        const formData = new FormData();
+        files.forEach(file => {
+            formData.append('files', file);
         });
-    }
+        formData.append('user_prompt', userPrompt);
+
+        try {
+            const response = await api.post('/api/generate-study-material', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
+            return response.data;
+        } catch (error) {
+            throw new Error(`Failed to generate study material: ${error.response?.data?.detail || error.message}`);
+        }
+    },
 };
 
 export default apiService;
