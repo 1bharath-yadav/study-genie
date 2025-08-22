@@ -1,0 +1,38 @@
+[project]
+name = "study-genie"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+	"fastapi",
+	"uvicorn[standard]",
+	"pydantic",
+	"redis",
+	"sqlalchemy",
+	"asyncpg",
+	"langchain",
+	"numpy",
+	"httpx",
+	"pytest-asyncio",
+	"aiohttp",
+	"aiofiles",
+	"python-multipart",
+	"rank_bm25",
+	"pydantic",
+	"langchain_community",
+	"langchain_google_genai",
+	"langchain[google-genai]",
+	"langchain_astradb",
+	"psycopg2-binary>=2.9.10",
+	"pytest>=8.4.1",
+]
+
+[project.optional-dependencies]
+dev = [
+	"pytest",
+	"pytest-asyncio",
+	"pytest-cov",
+	"black",
+	"pre-commit",
+]
