@@ -401,3 +401,21 @@ class ProgressFilter(BaseModel):
     subject_ids: Optional[List[int]] = None
     status_filter: Optional[List[ConceptStatus]] = None
     include_inactive: bool = False
+
+
+# File Processing Models
+
+class FileProcessRequest(BaseModel):
+    student_id: Optional[int] = None
+    subject_name: Optional[str] = None
+    chapter_name: Optional[str] = None
+
+
+class FileProcessResponse(BaseModel):
+    filename: str
+    file_type: str
+    extracted_text: str
+    text_length: int
+    word_count: int
+    processed_response: Optional[Dict[str, Any]] = None
+    message: str

@@ -143,58 +143,85 @@ export const apiService = {
         }
     },
 
-    // File Upload Mock (since your backend doesn't have file upload endpoint yet)
-    processFileContent: async (fileContent, studentId, metadata) => {
-        // This would typically be a file upload endpoint
-        // For now, we'll simulate processing the extracted text
-        const mockLLMResponse = {
-            flashcards: {
-                card1: {
-                    question: "What is the main concept discussed in the uploaded content?",
-                    answer: "Based on the uploaded content analysis",
-                    key_concepts: "Core concept identification",
-                    key_concepts_data: "Detailed analysis of the main topics",
-                    difficulty: "Medium"
-                },
-                // Add more cards based on content...
-            },
-            quiz: {
-                Q1: {
-                    question: "Which statement best describes the content?",
-                    options: ["Option A", "Option B", "Option C", "Option D"],
-                    correct_answer: "Option A",
-                    explanation: "This is correct because..."
-                },
-                // Add more questions...
-            },
-            match_the_following: {
-                columnA: ["Term 1", "Term 2", "Term 3"],
-                columnB: ["Definition 1", "Definition 2", "Definition 3"],
-                mappings: [
-                    { A: "Term 1", B: "Definition 1" },
-                    { A: "Term 2", B: "Definition 2" },
-                    { A: "Term 3", B: "Definition 3" }
-                ]
-            },
-            summary: "This is a comprehensive summary of the uploaded content covering key concepts and learning objectives.",
-            learning_objectives: [
-                "Understand the main concepts presented",
-                "Apply knowledge in practical scenarios",
-                "Analyze and synthesize information"
-            ]
-        };
+    // File Upload and Processing with LLM
+    uploadFileAndProcess: async (file, studentId, subjectName, chapterName) => {
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
 
-        const requestData = {
-            student_id: studentId,
-            subject_name: metadata.subject || "General Studies",
-            chapter_name: metadata.chapter || "Chapter 1",
-            concept_name: metadata.concept || "Core Concepts",
-            llm_response: mockLLMResponse,
-            user_query: `Process uploaded content: ${fileContent.substring(0, 100)}...`,
-            difficulty_level: metadata.difficulty || "Medium"
-        };
+            if (studentId) formData.append('student_id', studentId);
+            if (subjectName) formData.append('subject_name', subjectName);
+            if (chapterName) formData.append('chapter_name', chapterName);
 
-        return await this.processLLMResponse(requestData);
+            const response = await api.post('/api/process-llm-response', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                timeout: 60000, // 60 seconds for file processing
+            });
+
+            console.log('File upload and processing response:', response.data);
+            return response.data;
+        } catch (error) {
+            console.error('File upload and processing error:', error.response?.data);
+            throw new Error(`Failed to upload and process file: ${error.response?.data?.detail || error.message}`);
+        }
+    },
+
+    // Batch file upload
+    uploadMultipleFiles: async (files, studentId, subjectName) => {
+        try {
+            const formData = new FormData();
+
+            files.forEach((file, index) => {
+                formData.append('files', file);
+            });
+
+            if (studentId) formData.append('student_id', studentId);
+            if (subjectName) formData.append('subject_name', subjectName);
+
+            const response = await api.post('/api/files/batch-upload', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                timeout: 120000, // 2 minutes for batch processing
+            });
+
+            return response.data;
+        } catch (error) {
+            console.error('Batch file upload error:', error.response?.data);
+            throw new Error(`Failed to upload files: ${error.response?.data?.detail || error.message}`);
+        }
+    },
+
+    // Extract text only (without LLM processing)
+    extractTextOnly: async (file) => {
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const response = await api.post('/api/files/extract-text-only', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
+
+            return response.data;
+        } catch (error) {
+            console.error('Text extraction error:', error.response?.data);
+            throw new Error(`Failed to extract text: ${error.response?.data?.detail || error.message}`);
+        }
+    },
+
+    // Get supported file types
+    getSupportedFileTypes: async () => {
+        try {
+            const response = await api.get('/api/files/supported-types');
+            return response.data;
+        } catch (error) {
+            console.error('Error getting supported file types:', error.response?.data);
+            throw new Error(`Failed to get supported file types: ${error.response?.data?.detail || error.message}`);
+        }
     },
 
     // Utility function to extract text from different file types

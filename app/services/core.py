@@ -176,10 +176,10 @@ class LearningProgressService:
                 concept_progress = await conn.fetch(concept_query, student_id)
 
             recent_activity_query = """
-                SELECT activity_type, details, created_at
+                SELECT activity_type, activity_data, completed_at
                 FROM learning_activities
                 WHERE student_id = $1
-                ORDER BY created_at DESC
+                ORDER BY completed_at DESC
                 LIMIT 20
             """
 
