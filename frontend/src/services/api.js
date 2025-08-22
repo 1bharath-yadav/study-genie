@@ -144,16 +144,18 @@ export const apiService = {
     },
 
     // File Upload and Processing with LLM
-    uploadFileAndProcess: async (file, studentId, subjectName, chapterName) => {
+    uploadFileAndProcess: async (file, studentId, subjectName, chapterName, conceptName, userQuery) => {
         try {
             const formData = new FormData();
-            formData.append('file', file);
+            formData.append('files', file);
+            formData.append('student_id', studentId || 1);
+            formData.append('subject_name', subjectName || 'General');
+            formData.append('chapter_name', chapterName || 'Chapter 1');
+            formData.append('concept_name', conceptName || file.name.split('.')[0]);
+            formData.append('user_query', userQuery || `Generate study materials for ${file.name}`);
+            formData.append('difficulty_level', 'Medium');
 
-            if (studentId) formData.append('student_id', studentId);
-            if (subjectName) formData.append('subject_name', subjectName);
-            if (chapterName) formData.append('chapter_name', chapterName);
-
-            const response = await api.post('/api/process-llm-response', formData, {
+            const response = await api.post('/api/upload-and-process', formData, {
                 headers: {
                     'Content-Type': 'multipart/form-data',
                 },
@@ -164,6 +166,29 @@ export const apiService = {
             return response.data;
         } catch (error) {
             console.error('File upload and processing error:', error.response?.data);
+            throw new Error(`Failed to upload and process file: ${error.response?.data?.detail || error.message}`);
+        }
+    },
+
+    // Simplified file upload (only requires student_id, prompt, and files)
+    uploadFileSimple: async (file, studentId, userQuery) => {
+        try {
+            const formData = new FormData();
+            formData.append('files', file);
+            formData.append('student_id', studentId || 1);
+            formData.append('user_query', userQuery || `Generate comprehensive study materials from this file: ${file.name}`);
+
+            const response = await api.post('/api/upload-simple', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                timeout: 60000, // 60 seconds for file processing
+            });
+
+            console.log('Simple file upload response:', response.data);
+            return response.data;
+        } catch (error) {
+            console.error('Simple file upload error:', error.response?.data);
             throw new Error(`Failed to upload and process file: ${error.response?.data?.detail || error.message}`);
         }
     },
