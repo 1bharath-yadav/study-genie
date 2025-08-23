@@ -175,8 +175,10 @@ export const apiService = {
         try {
             const formData = new FormData();
             formData.append('files', file);
-            formData.append('student_id', studentId || 1);
+            formData.append('student_id', String(studentId || 1));  // Ensure it's a string for form data
             formData.append('user_query', userQuery || `Generate comprehensive study materials from this file: ${file.name}`);
+
+            console.log('Uploading with studentId:', studentId, 'userQuery:', userQuery);
 
             const response = await api.post('/api/upload-simple', formData, {
                 headers: {

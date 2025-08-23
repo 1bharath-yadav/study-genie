@@ -20,18 +20,56 @@
 
 body {
     margin: 0;
+    font-family: Arial, sans-serif;
+}
+
+.container {
     display: flex;
-    place-items: center;
-    min-width: 320px;
-    min-height: 100vh;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 20px;
+}
+
+.box {
+    flex: 1 1 250px;
+    background: lightblue;
+    padding: 20px;
+    text-align: center;
+    border-radius: 8px;
+}
+
+@media (max-width: 600px) {
+    .box {
+        flex: 1 1 100%;
+    }
+}
+
+html,
+body,
+#root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
 }
 
 #root {
+    /* Remove this */
+    /* max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center; */
+
+    display: flex;
+    flex-direction: column;
+}
+
+/* #root {
     max-width: 1280px;
     margin: 0 auto;
     padding: 2rem;
     text-align: center;
-}
+} */
 
 /* Custom scrollbar */
 ::-webkit-scrollbar {
@@ -169,8 +207,4 @@ body {
 
 .btn-secondary {
     @apply bg-secondary-600 hover:bg-secondary-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200;
-}
-
-.btn-outline {
-    @apply border-2 border-primary-600 text-primary-600 hover:bg-primary-600 hover:text-white font-medium py-2 px-4 rounded-lg transition-all duration-200;
 }
