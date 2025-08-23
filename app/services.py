@@ -169,6 +169,16 @@ class LearningProgressService:
             """
 
             subject_progress = await conn.fetch(subject_query, student_id)
+            # Add progress_percentage to each subject
+            subject_progress_list = []
+            for row in subject_progress:
+                total = row['total_concepts'] or 0
+                mastered = row['mastered_concepts'] or 0
+                progress_percentage = (mastered / total) * \
+                    100 if total > 0 else 0
+                subject_dict = dict(row)
+                subject_dict['progress_percentage'] = progress_percentage
+                subject_progress_list.append(subject_dict)
 
             # Detailed concept progress
             concept_query = """
@@ -204,7 +214,7 @@ class LearningProgressService:
             return {
                 'student_id': student_id,
                 'overall_progress': dict(overall_stats) if overall_stats else {},
-                'subject_progress': [dict(row) for row in subject_progress],
+                'subject_progress': subject_progress_list,
                 'concept_progress': [
                     ConceptProgress(
                         concept_id=row['concept_id'],
