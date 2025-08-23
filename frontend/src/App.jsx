@@ -14,28 +14,13 @@ import FileUpload from "./components/FileUpload";
 import FlashCardDeck from "./components/FlashCardDeck";
 import Quiz from "./components/Quiz";
 import MatchTheFollowing from "./components/MatchTheFollowing";
+
 import ProgressDashboard from "./components/ProgressDashboard";
 import LoginForm from "./components/LoginForm";
 import Loading from "./components/Loading";
+import { apiService } from "./services/api";
 
-const mockProgressData = {
-    student_id: "demo-student",
-    total_concepts: 25,
-    mastered_concepts: 8,
-    weak_concepts: 3,
-    subject_progress: [
-        { subject_name: "Mathematics", progress_percentage: 75 },
-        { subject_name: "Physics", progress_percentage: 60 },
-        { subject_name: "Chemistry", progress_percentage: 85 },
-    ],
-};
 
-const mockUser = {
-    student_id: 1,
-    username: "demo_user",
-    email: "demo@studygenie.com",
-    full_name: "Alex Johnson",
-};
 
 const GlassCard = ({ className = "", children, hover = false }) => (
     <motion.div
@@ -74,13 +59,17 @@ const EmptyState = () => (
     </GlassCard>
 );
 
+
 const StudyGenieApp = () => {
-    const [progressData] = useState(mockProgressData);
+    const [user, setUser] = useState(null); // {student_id, username, ...}
+    const [progressData, setProgressData] = useState(null);
     const [studyContent, setStudyContent] = useState(null);
     const [active, setActive] = useState("upload");
     const [isProcessing, setIsProcessing] = useState(false);
     const [isMobile, setIsMobile] = useState(false);
     const [showAssistant, setShowAssistant] = useState(false);
+    const [loading, setLoading] = useState(false);
+
 
     useEffect(() => {
         const checkMobile = () => setIsMobile(window.innerWidth < 1024);
@@ -88,6 +77,28 @@ const StudyGenieApp = () => {
         window.addEventListener("resize", checkMobile);
         return () => window.removeEventListener("resize", checkMobile);
     }, []);
+
+    // Fetch progress after login
+    useEffect(() => {
+        if (user?.student_id) {
+            setLoading(true);
+            apiService.getStudentProgress(user.student_id)
+                .then(setProgressData)
+                .catch(e => setProgressData(null))
+                .finally(() => setLoading(false));
+        }
+    }, [user]);
+    // Login handler for LoginForm
+    const handleLogin = async (formData) => {
+        setLoading(true);
+        try {
+            const res = await apiService.createStudent(formData);
+            setUser(res);
+            return res;
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const handleFileProcessed = async (fileData) => {
         setIsProcessing(true);
@@ -171,6 +182,14 @@ const StudyGenieApp = () => {
     );
 
     const renderMainContent = () => {
+        if (!user) {
+            return (
+                <div className="flex justify-center items-center min-h-[60vh]">
+                    <LoginForm onLogin={handleLogin} />
+                </div>
+            );
+        }
+        if (loading) return <Loading />;
         if (active === "progress") {
             return (
                 <div className="space-y-6">
@@ -181,7 +200,6 @@ const StudyGenieApp = () => {
                 </div>
             );
         }
-
         if (active === "settings") {
             return (
                 <GlassCard className="p-6">
@@ -189,7 +207,6 @@ const StudyGenieApp = () => {
                 </GlassCard>
             );
         }
-
         return (
             <div className="space-y-6">
                 <h1 className="text-3xl font-bold">
@@ -306,7 +323,7 @@ const StudyGenieApp = () => {
 
             {/* Assistant Component */}
             <AnimatePresence>
-                {showAssistant && (
+                {showAssistant && user && (
                     <motion.div
                         initial={{ opacity: 0, y: 20, scale: 0.95 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -314,7 +331,7 @@ const StudyGenieApp = () => {
                         transition={{ duration: 0.3, type: "spring", stiffness: 300, damping: 30 }}
                     >
                         <FileUpload
-                            studentId={mockUser.student_id}
+                            studentId={user.student_id}
                             onFileProcessed={handleFileProcessed}
                             isProcessing={isProcessing}
                             hasContent={!!studyContent}
