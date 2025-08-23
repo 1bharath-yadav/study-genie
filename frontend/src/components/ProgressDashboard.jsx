@@ -158,11 +158,12 @@ const ProgressDashboard = ({ progressData, className = '' }) => {
         }]
     };
 
+    // Expecting progressData.weekly_study_time = [minutes for Mon, Tue, ...]
     const weeklyProgressData = {
         labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
         datasets: [{
             label: 'Study Time (minutes)',
-            data: [45, 60, 30, 80, 55, 90, 40], // Mock data - replace with actual
+            data: progressData.weekly_study_time || [0, 0, 0, 0, 0, 0, 0],
             borderColor: 'rgba(34, 197, 94, 1)',
             backgroundColor: 'rgba(34, 197, 94, 0.1)',
             borderWidth: 3,
