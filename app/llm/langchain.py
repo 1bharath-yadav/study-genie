@@ -200,6 +200,24 @@ async def load_documents_from_files(file_paths: List[str], temp_dir: str) -> Lis
     """
     all_documents = []
 
+    async def send_to_llm_for_handwriting(file_path: str) -> List[Document]:
+        """
+        Placeholder: Send the file to LLM for OCR/handwriting recognition if text extraction fails.
+        Replace this with actual LLM OCR logic as needed.
+        """
+        logger.warning(
+            f"Text extraction failed for {file_path}. Sending to LLM for handwriting/OCR analysis.")
+        # Example: create a Document with a note that LLM OCR is needed
+        from langchain_core.documents import Document
+        doc = Document(page_content="", metadata={
+            'source_file': file_path,
+            'file_type': Path(file_path).suffix.lower(),
+            'original_length': 0,
+            'llm_ocr_required': True
+        })
+        # In production, replace this with actual LLM OCR result
+        return [doc]
+
     for file_path in file_paths:
         try:
             file_extension = Path(file_path).suffix.lower()
@@ -217,6 +235,11 @@ async def load_documents_from_files(file_paths: List[str], temp_dir: str) -> Lis
 
             # Load documents
             docs = await asyncio.to_thread(loader.load)
+
+            # Check if all docs are empty (no text extracted)
+            if not any(doc.page_content.strip() for doc in docs):
+                # If no text extracted, send to LLM for OCR/handwriting
+                docs = await send_to_llm_for_handwriting(file_path)
 
             # Add source metadata
             for doc in docs:

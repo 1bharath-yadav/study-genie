@@ -45,7 +45,7 @@ class StudentCreate(BaseModel):
 
 
 class StudentResponse(BaseModel):
-    student_id: int
+    student_id: str
     username: str
     email: str
     full_name: str
@@ -80,7 +80,7 @@ class LLMResponseContent(BaseModel):
 
 
 class LLMResponseRequest(BaseModel):
-    student_id: int
+    student_id: str
     subject_name: str
     chapter_name: str
     concept_name: str
@@ -96,7 +96,7 @@ class LLMResponseRequest(BaseModel):
 
 
 class TrackingMetadata(BaseModel):
-    student_id: int
+    student_id: str
     subject_id: int
     chapter_id: int
     concept_id: int
@@ -148,7 +148,7 @@ class ConceptProgress(BaseModel):
 
 
 class StudentProgressResponse(BaseModel):
-    student_id: int
+    student_id: str
     overall_progress: Dict[str, Any]
     subject_progress: List[Dict[str, Any]]
     concept_progress: List[ConceptProgress]
@@ -198,7 +198,7 @@ class StudySessionEnd(BaseModel):
 
 class StudySessionResponse(BaseModel):
     session_id: int
-    student_id: int
+    student_id: str
     status: str
     message: str
 
@@ -265,7 +265,7 @@ class ActivityStats(BaseModel):
 
 
 class StudentAnalyticsResponse(BaseModel):
-    student_id: int
+    student_id: str
     overall_stats: OverallStats
     subject_progress: List[SubjectProgressStats]
     activity_stats: List[ActivityStats]
@@ -321,7 +321,7 @@ class LearningPathStep(BaseModel):
 
 
 class LearningPathResponse(BaseModel):
-    student_id: int
+    student_id: str
     subject_name: Optional[str] = None
     path_steps: List[LearningPathStep]
     total_estimated_time: int  # in minutes
@@ -361,7 +361,7 @@ class FlashcardSessionResults(BaseModel):
 
 
 class DashboardData(BaseModel):
-    student_id: int
+    student_id: str
     analytics: StudentAnalyticsResponse
     recommendations: List[RecommendationResponse]
     recent_activity: List[Dict[str, Any]]
@@ -406,7 +406,7 @@ class ProgressFilter(BaseModel):
 # File Processing Models
 
 class FileProcessRequest(BaseModel):
-    student_id: Optional[int] = None
+    student_id: Optional[str] = None
     subject_name: Optional[str] = None
     chapter_name: Optional[str] = None
 
