@@ -148,7 +148,7 @@ export const apiService = {
         try {
             const formData = new FormData();
             formData.append('files', file);
-            formData.append('student_id', studentId || 1);
+            formData.append('student_id', String(studentId || 1)); // Ensure string
             formData.append('subject_name', subjectName || 'General');
             formData.append('chapter_name', chapterName || 'Chapter 1');
             formData.append('concept_name', conceptName || file.name.split('.')[0]);

@@ -11,6 +11,7 @@ import toast from 'react-hot-toast';
 
 const AssistantBox = ({ studentId, onFileProcessed, isProcessing: externalProcessing, hasContent = false, onClose }) => {
     const [uploadedFiles, setUploadedFiles] = useState([]);
+    const [pendingFile, setPendingFile] = useState(null); // Store file until submit
     const [chatHistory, setChatHistory] = useState([
         {
             type: 'assistant',
@@ -48,71 +49,9 @@ const AssistantBox = ({ studentId, onFileProcessed, isProcessing: externalProces
     const onDrop = useCallback(async (acceptedFiles) => {
         const file = acceptedFiles[0];
         if (!file) return;
-
-        try {
-            const fileWithId = {
-                id: Date.now(),
-                file,
-                name: file.name,
-                size: file.size,
-                type: file.type,
-                status: 'processing'
-            };
-
-            setUploadedFiles(prev => [...prev, fileWithId]);
-            setChatHistory(prev => [...prev, {
-                type: 'file',
-                content: `Uploaded file: ${file.name}`,
-                timestamp: new Date()
-            }]);
-
-            // Add processing message
-            setChatHistory(prev => [...prev, {
-                type: 'assistant',
-                content: `🔄 Processing ${file.name}... This may take a moment.`,
-                timestamp: new Date()
-            }]);
-
-            toast.success(`Uploaded "${file.name}"`);
-
-            const response = await apiService.uploadFileSimple(
-                file,
-                studentId,
-                `Generate study materials from this file: ${file.name}`
-            );
-
-            setUploadedFiles(prev =>
-                prev.map(f => f.id === fileWithId.id
-                    ? { ...f, status: 'completed', response }
-                    : f
-                )
-            );
-
-            setChatHistory(prev => [...prev, {
-                type: 'assistant',
-                content: response.message || 'Study materials generated successfully!',
-                timestamp: new Date()
-            }]);
-
-            if (onFileProcessed && response) {
-                onFileProcessed({
-                    fileName: file.name,
-                    enhanced_response: response,
-                    ...response
-                });
-            }
-
-        } catch (error) {
-            console.error('Error:', error);
-            toast.error(`Failed: ${error.message}`);
-            setUploadedFiles(prev =>
-                prev.map(f => f.id === file.id
-                    ? { ...f, status: 'error' }
-                    : f
-                )
-            );
-        }
-    }, [studentId]);
+        setPendingFile(file);
+        toast.success(`Ready to upload: "${file.name}". Click send to process.`);
+    }, []);
 
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
@@ -128,26 +67,75 @@ const AssistantBox = ({ studentId, onFileProcessed, isProcessing: externalProces
     // Handle prompt submission
     const handlePromptSubmit = async (e) => {
         e.preventDefault();
-        if (!userPrompt.trim()) return;
+        if (!userPrompt.trim() && !pendingFile) return;
 
-        setChatHistory(prev => [...prev, {
-            type: 'user',
-            content: userPrompt,
-            timestamp: new Date()
-        }]);
+        if (userPrompt.trim()) {
+            setChatHistory(prev => [...prev, {
+                type: 'user',
+                content: userPrompt,
+                timestamp: new Date()
+            }]);
+        }
 
         try {
             setIsProcessing(true);
-            const resp = await apiService.processLLMResponse({
-                prompt: userPrompt,
-                student_id: studentId
-            });
-
-            setChatHistory(prev => [...prev, {
-                type: 'assistant',
-                content: resp?.message || resp?.answer || 'Got it!',
-                timestamp: new Date()
-            }]);
+            let resp = null;
+            if (pendingFile) {
+                // File upload (with or without prompt)
+                const fileWithId = {
+                    id: Date.now(),
+                    file: pendingFile,
+                    name: pendingFile.name,
+                    size: pendingFile.size,
+                    type: pendingFile.type,
+                    status: 'processing'
+                };
+                setUploadedFiles(prev => [...prev, fileWithId]);
+                setChatHistory(prev => [...prev, {
+                    type: 'file',
+                    content: `Uploaded file: ${pendingFile.name}`,
+                    timestamp: new Date()
+                }]);
+                setChatHistory(prev => [...prev, {
+                    type: 'assistant',
+                    content: `🔄 Processing ${pendingFile.name}... This may take a moment.`,
+                    timestamp: new Date()
+                }]);
+                resp = await apiService.uploadFileSimple(
+                    pendingFile,
+                    studentId,
+                    userPrompt && userPrompt.trim() ? userPrompt : `Generate study materials from this file: ${pendingFile.name}`
+                );
+                setUploadedFiles(prev =>
+                    prev.map(f => f.id === fileWithId.id
+                        ? { ...f, status: 'completed', response: resp }
+                        : f
+                    )
+                );
+                setChatHistory(prev => [...prev, {
+                    type: 'assistant',
+                    content: resp?.message || 'Study materials generated successfully!',
+                    timestamp: new Date()
+                }]);
+                if (onFileProcessed && resp) {
+                    onFileProcessed({
+                        fileName: pendingFile.name,
+                        enhanced_response: resp,
+                        ...resp
+                    });
+                }
+            } else if (userPrompt.trim()) {
+                // Only prompt
+                resp = await apiService.processLLMResponse({
+                    prompt: userPrompt,
+                    student_id: studentId
+                });
+                setChatHistory(prev => [...prev, {
+                    type: 'assistant',
+                    content: resp?.message || resp?.answer || 'Got it!',
+                    timestamp: new Date()
+                }]);
+            }
         } catch {
             setChatHistory(prev => [...prev, {
                 type: 'error',
@@ -157,6 +145,7 @@ const AssistantBox = ({ studentId, onFileProcessed, isProcessing: externalProces
         } finally {
             setIsProcessing(false);
             setUserPrompt('');
+            setPendingFile(null);
         }
     };
 
@@ -283,6 +272,10 @@ const AssistantBox = ({ studentId, onFileProcessed, isProcessing: externalProces
                         whileTap={{ scale: 0.97 }}
                     >
                         <input {...getInputProps()} />
+                        {/* Show file name if pending */}
+                        {pendingFile && (
+                            <span className="text-xs text-indigo-200 block truncate max-w-[80px]">{pendingFile.name}</span>
+                        )}
                         <File className="w-5 h-5 text-indigo-200/90" />
                     </motion.div>
 
@@ -305,7 +298,7 @@ const AssistantBox = ({ studentId, onFileProcessed, isProcessing: externalProces
                     {/* Send Button */}
                     <button
                         type="submit"
-                        disabled={!userPrompt.trim() || isProcessing || externalProcessing}
+                        disabled={(!userPrompt.trim() && !pendingFile) || isProcessing || externalProcessing}
                         className="p-2 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-full hover:from-indigo-600 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:opacity-50 shadow-md transition-all"
                     >
                         <Send className="w-4 h-4" />

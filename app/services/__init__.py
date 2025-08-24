@@ -1,3 +1,3 @@
-from .core import LearningProgressService
+from .core import LearningProgressService, RecommendationService
 
-__all__ = ["LearningProgressService"]
+__all__ = ["LearningProgressService", "RecommendationService"]

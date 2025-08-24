@@ -16,8 +16,9 @@ import Quiz from "./components/Quiz";
 import MatchTheFollowing from "./components/MatchTheFollowing";
 
 import ProgressDashboard from "./components/ProgressDashboard";
-import LoginForm from "./components/LoginForm";
+// import LoginForm from "./components/LoginForm";
 import Loading from "./components/Loading";
+import Profile from "./components/Profile";
 import { apiService } from "./services/api";
 
 
@@ -88,17 +89,31 @@ const StudyGenieApp = () => {
                 .finally(() => setLoading(false));
         }
     }, [user]);
-    // Login handler for LoginForm
-    const handleLogin = async (formData) => {
-        setLoading(true);
-        try {
-            const res = await apiService.createStudent(formData);
-            setUser(res);
-            return res;
-        } finally {
-            setLoading(false);
-        }
+
+    // Google OAuth login handler
+
+    const handleGoogleLogin = () => {
+        window.location.href = "http://localhost:8000/api/auth/login";
     };
+
+    // Handle Google OAuth callback or redirect with user info
+    useEffect(() => {
+        const url = new URL(window.location.href);
+        // If redirected with user info as query params
+        const sub = url.searchParams.get("sub");
+        const name = url.searchParams.get("name");
+        const email = url.searchParams.get("email");
+        const picture = url.searchParams.get("picture");
+        if (sub && email) {
+            setUser({
+                student_id: sub,
+                username: name || email,
+                email,
+                picture
+            });
+            window.history.replaceState({}, document.title, "/");
+        }
+    }, []);
 
     const handleFileProcessed = async (fileData) => {
         setIsProcessing(true);
@@ -184,8 +199,14 @@ const StudyGenieApp = () => {
     const renderMainContent = () => {
         if (!user) {
             return (
-                <div className="flex justify-center items-center min-h-[60vh]">
-                    <LoginForm onLogin={handleLogin} />
+                <div className="flex flex-col justify-center items-center min-h-[60vh]">
+                    <button
+                        onClick={handleGoogleLogin}
+                        className="px-6 py-3 bg-gradient-to-r from-red-500 to-yellow-500 text-white rounded-xl shadow-lg text-lg font-semibold flex items-center gap-3 hover:scale-105 transition-all"
+                    >
+                        <svg width="24" height="24" viewBox="0 0 48 48" className="inline-block"><g><path fill="#4285F4" d="M43.611 20.083H42V20H24v8h11.303C33.962 32.833 29.418 36 24 36c-6.627 0-12-5.373-12-12s5.373-12 12-12c2.803 0 5.377.99 7.413 2.626l6.293-6.293C34.583 5.527 29.617 3 24 3 12.954 3 4 11.954 4 23s8.954 20 20 20c11.046 0 20-8.954 20-20 0-1.341-.138-2.651-.389-3.917z" /><path fill="#34A853" d="M6.306 14.691l6.571 4.819C14.655 16.104 19.001 13 24 13c2.803 0 5.377.99 7.413 2.626l6.293-6.293C34.583 5.527 29.617 3 24 3c-7.732 0-14.313 4.388-17.694 10.691z" /><path fill="#FBBC05" d="M24 43c5.356 0 10.19-1.843 13.982-4.989l-6.481-5.307C29.418 36 24 36 24 36c-5.408 0-9.946-3.153-11.29-7.406l-6.563 5.061C9.667 40.262 16.32 43 24 43z" /><path fill="#EA4335" d="M43.611 20.083H42V20H24v8h11.303c-1.377 3.633-5.303 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c2.803 0 5.377.99 7.413 2.626l6.293-6.293C34.583 5.527 29.617 3 24 3c-7.732 0-14.313 4.388-17.694 10.691z" /></g></svg>
+                        Sign in with Google
+                    </button>
                 </div>
             );
         }
@@ -202,8 +223,11 @@ const StudyGenieApp = () => {
         }
         if (active === "settings") {
             return (
-                <GlassCard className="p-6">
-                    <p className="text-center opacity-70">Settings panel coming soon...</p>
+                <GlassCard className="p-6 space-y-6">
+                    <h1 className="text-2xl font-bold text-center mb-4">
+                        <GradientText>Settings</GradientText>
+                    </h1>
+                    <Profile studentId={user?.student_id} />
                 </GlassCard>
             );
         }
