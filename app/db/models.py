@@ -354,17 +354,20 @@ class StudentManager:
             if full_name is not None:
                 updates["full_name"] = full_name
             if learning_preferences is not None:
-                updates["learning_preferences"] = json.dumps(learning_preferences)
+                updates["learning_preferences"] = json.dumps(
+                    learning_preferences)
 
             if not updates:
-                return await self.get_student_by_id(student_id) # No updates, return current student
+                # No updates, return current student
+                return await self.get_student_by_id(student_id)
 
-            set_clauses = [f"{key} = ${i+1}" for i, key in enumerate(updates.keys())]
+            set_clauses = [f"{key} = ${i+1}" for i,
+                           key in enumerate(updates.keys())]
             params = list(updates.values())
-            params.append(student_id) # student_id is the last parameter
+            params.append(student_id)  # student_id is the last parameter
 
             query = f"UPDATE students SET {', '.join(set_clauses)}, updated_at = CURRENT_TIMESTAMP WHERE student_id = ${len(params)} RETURNING *"
-            
+
             updated_student = await conn.fetchrow(query, *params)
             return dict(updated_student) if updated_student else None
 
@@ -612,11 +615,11 @@ class RecommendationEngine:
             for concept in weak_concepts:
                 priority = 10 if concept['severity_score'] and concept['severity_score'] > 0.7 else 7
                 recommendations.append({
-                    'type': 'concept_review',
+                    'recommendation_type': 'concept_review',
                     'concept_id': concept['concept_id'],
                     'title': f"Review {concept['concept_name']}",
                     'description': f"Focus on {concept['concept_name']} in {concept['chapter_name']} ({concept['subject_name']})",
-                    'priority': priority
+                    'priority_score': priority
                 })
 
             # Get concepts ready for advanced practice
@@ -635,11 +638,11 @@ class RecommendationEngine:
 
             for concept in strong_concepts:
                 recommendations.append({
-                    'type': 'maintenance_practice',
+                    'recommendation_type': 'maintenance_practice',
                     'concept_id': concept['concept_id'],
                     'title': f"Practice {concept['concept_name']}",
                     'description': f"Keep your skills sharp with {concept['concept_name']} practice",
-                    'priority': 4
+                    'priority_score': 4
                 })
 
             return recommendations
@@ -659,8 +662,9 @@ class RecommendationEngine:
                     """INSERT INTO recommendations 
                        (student_id, concept_id, recommendation_type, title, description, priority_score)
                        VALUES ($1, $2, $3, $4, $5, $6)""",
-                    student_id, rec.get('concept_id'), rec['type'],
-                    rec['title'], rec['description'], rec['priority']
+                    student_id, rec.get(
+                        'concept_id'), rec['recommendation_type'],
+                    rec['title'], rec['description'], rec['priority_score']
                 )
 
     async def get_active_recommendations(self, student_id: str, limit: int = 10) -> List[Dict[str, Any]]:

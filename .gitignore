@@ -98,3 +98,6 @@ build/
 .coverage
 htmlcov/
 
+frontend/
+
+hf-spaces-deploy

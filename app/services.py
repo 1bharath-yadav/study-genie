@@ -10,7 +10,7 @@ from .db.models import (
     DatabaseManager, StudentManager, SubjectManager,
     ProgressTracker, RecommendationEngine, AnalyticsManager, StudySessionManager
 )
-from .models import *, StudentUpdate
+from .models import *
 
 logger = logging.getLogger("progress_tracker_services")
 
@@ -428,6 +428,249 @@ class LearningProgressService:
             correct_answers=engagement_score,
             total_questions=100  # Treat as percentage
         )
+
+    # Analytics methods for dashboard and insights
+    async def get_session_statistics(self, student_id: str) -> Dict[str, Any]:
+        """Get session statistics for student dashboard"""
+        session_manager = StudySessionManager(self.db)
+        return await session_manager.get_session_statistics(student_id)
+
+    async def get_study_streak(self, student_id: str) -> int:
+        """Calculate current study streak in days"""
+        async with self.db.pool.acquire() as conn:
+            result = await conn.fetchrow("""
+                WITH daily_sessions AS (
+                    SELECT DISTINCT DATE(created_at) as study_date
+                    FROM study_sessions
+                    WHERE student_id = $1 AND completed_at IS NOT NULL
+                    ORDER BY study_date DESC
+                ),
+                streak_calc AS (
+                    SELECT 
+                        study_date,
+                        study_date - INTERVAL '1 day' * ROW_NUMBER() OVER (ORDER BY study_date DESC) as group_date
+                    FROM daily_sessions
+                )
+                SELECT COUNT(*) as streak
+                FROM streak_calc
+                WHERE group_date = (
+                    SELECT group_date 
+                    FROM streak_calc 
+                    WHERE study_date = CURRENT_DATE 
+                       OR study_date = CURRENT_DATE - INTERVAL '1 day'
+                    LIMIT 1
+                );
+            """, student_id)
+
+            return result['streak'] if result else 0
+
+    async def get_quiz_statistics(self, student_id: str, days: int = 30) -> Dict[str, Any]:
+        """Get quiz statistics for a time period"""
+        async with self.db.pool.acquire() as conn:
+            stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_quizzes,
+                    AVG(CASE WHEN total_questions > 0 THEN (correct_answers::float / total_questions) * 100 ELSE 0 END) as average_accuracy,
+                    SUM(total_questions) as total_questions,
+                    SUM(correct_answers) as total_correct
+                FROM study_sessions
+                WHERE student_id = $1 
+                  AND completed_at >= CURRENT_DATE - INTERVAL '%s days'
+                  AND total_questions > 0
+            """, student_id, days)
+
+            return dict(stats) if stats else {
+                'total_quizzes': 0,
+                'average_accuracy': 0,
+                'total_questions': 0,
+                'total_correct': 0
+            }
+
+    async def get_all_subjects_progress(self, student_id: str) -> List[Dict[str, Any]]:
+        """Get progress for all subjects for a student"""
+        async with self.db.pool.acquire() as conn:
+            subjects = await conn.fetch("""
+                SELECT 
+                    s.subject_id,
+                    s.subject_name,
+                    COALESCE(
+                        AVG(CASE WHEN cp.mastery_level >= 80 THEN 100
+                                 WHEN cp.mastery_level >= 60 THEN 75
+                                 WHEN cp.mastery_level >= 40 THEN 50
+                                 WHEN cp.mastery_level >= 20 THEN 25
+                                 ELSE 0 END), 0
+                    ) as mastery_percentage
+                FROM subjects s
+                LEFT JOIN chapters ch ON s.subject_id = ch.subject_id
+                LEFT JOIN concepts c ON ch.chapter_id = c.chapter_id
+                LEFT JOIN concept_progress cp ON c.concept_id = cp.concept_id 
+                    AND cp.student_id = $1
+                WHERE s.subject_id IN (
+                    SELECT DISTINCT ch2.subject_id 
+                    FROM concept_progress cp2
+                    JOIN concepts c2 ON cp2.concept_id = c2.concept_id
+                    JOIN chapters ch2 ON c2.chapter_id = ch2.chapter_id
+                    WHERE cp2.student_id = $1
+                )
+                GROUP BY s.subject_id, s.subject_name
+                ORDER BY s.subject_name
+            """, student_id)
+
+            return [dict(row) for row in subjects]
+
+    async def get_weekly_performance(self, student_id: str, weeks: int = 4) -> List[Dict[str, Any]]:
+        """Get weekly performance data"""
+        async with self.db.pool.acquire() as conn:
+            weekly_data = await conn.fetch("""
+                SELECT 
+                    DATE_TRUNC('week', created_at) as week_start,
+                    COUNT(*) as sessions_count,
+                    AVG(CASE WHEN total_questions > 0 THEN (correct_answers::float / total_questions) * 100 ELSE 0 END) as average_score,
+                    SUM(session_duration) as total_time,
+                    SUM(total_questions) as total_questions
+                FROM study_sessions
+                WHERE student_id = $1 
+                  AND created_at >= CURRENT_DATE - INTERVAL '%s weeks'
+                  AND completed_at IS NOT NULL
+                GROUP BY DATE_TRUNC('week', created_at)
+                ORDER BY week_start DESC
+            """, student_id, weeks)
+
+            return [dict(row) for row in weekly_data]
+
+    async def get_student_achievements(self, student_id: str) -> List[Dict[str, Any]]:
+        """Get student achievements and badges"""
+        # For now, calculate achievements based on current data
+        achievements = []
+
+        # Get session stats
+        session_stats = await self.get_session_statistics(student_id)
+        streak = await self.get_study_streak(student_id)
+
+        # Study streak achievements
+        if streak >= 7:
+            achievements.append({
+                'title': f'{streak}-Day Streak',
+                'type': 'streak',
+                'icon': 'Trophy',
+                'color': 'text-warning',
+                'points': streak * 10,
+                'earned_date': datetime.now().isoformat()
+            })
+
+        # Quiz master achievement
+        total_sessions = session_stats.get('total_sessions', 0)
+        if total_sessions >= 10:
+            achievements.append({
+                'title': 'Quiz Master',
+                'type': 'badge',
+                'icon': 'Target',
+                'color': 'text-primary',
+                'points': 100,
+                'earned_date': datetime.now().isoformat()
+            })
+
+        # Speed learner achievement
+        avg_accuracy = session_stats.get('avg_accuracy', 0)
+        if avg_accuracy >= 85:
+            achievements.append({
+                'title': 'Speed Learner',
+                'type': 'badge',
+                'icon': 'Zap',
+                'color': 'text-accent',
+                'points': 150,
+                'earned_date': datetime.now().isoformat()
+            })
+
+        return achievements
+
+    async def get_study_patterns(self, student_id: str, days: int = 30) -> Dict[str, Any]:
+        """Get study patterns and preferences"""
+        async with self.db.pool.acquire() as conn:
+            # Get peak study hours
+            hourly_data = await conn.fetch("""
+                SELECT 
+                    EXTRACT(HOUR FROM created_at) as study_hour,
+                    COUNT(*) as session_count,
+                    AVG(session_duration) as avg_duration
+                FROM study_sessions
+                WHERE student_id = $1 
+                  AND created_at >= CURRENT_DATE - INTERVAL '%s days'
+                  AND completed_at IS NOT NULL
+                GROUP BY EXTRACT(HOUR FROM created_at)
+                ORDER BY session_count DESC
+                LIMIT 3
+            """, student_id, days)
+
+            peak_hours = [int(row['study_hour']) for row in hourly_data]
+
+            # Get average session length
+            avg_session = await conn.fetchval("""
+                SELECT AVG(session_duration)
+                FROM study_sessions
+                WHERE student_id = $1 
+                  AND created_at >= CURRENT_DATE - INTERVAL '%s days'
+                  AND completed_at IS NOT NULL
+            """, student_id, days)
+
+            return {
+                'peak_hours': peak_hours,
+                'avg_session_length': int(avg_session or 0),
+                'preferred_subjects': [],  # TODO: implement based on session data
+                # Simple consistency metric
+                'consistency_score': min(100, len(peak_hours) * 30)
+            }
+
+    async def get_weakness_analysis(self, student_id: str) -> Dict[str, Any]:
+        """Get analysis of student's weak areas"""
+        async with self.db.pool.acquire() as conn:
+            # Get concepts with low mastery
+            weak_concepts = await conn.fetch("""
+                SELECT 
+                    c.concept_name,
+                    ch.chapter_name,
+                    s.subject_name,
+                    cp.mastery_level,
+                    cp.total_attempts,
+                    cp.correct_attempts
+                FROM concept_progress cp
+                JOIN concepts c ON cp.concept_id = c.concept_id
+                JOIN chapters ch ON c.chapter_id = ch.chapter_id
+                JOIN subjects s ON ch.subject_id = s.subject_id
+                WHERE cp.student_id = $1 
+                  AND cp.mastery_level < 60
+                  AND cp.total_attempts >= 3
+                ORDER BY cp.mastery_level ASC, cp.total_attempts DESC
+                LIMIT 10
+            """, student_id)
+
+            concepts = [dict(row) for row in weak_concepts]
+
+            # Generate improvement areas and recommendations
+            areas = []
+            recommendations = []
+
+            if concepts:
+                # Group by subject
+                subjects = {}
+                for concept in concepts:
+                    subject = concept['subject_name']
+                    if subject not in subjects:
+                        subjects[subject] = []
+                    subjects[subject].append(concept)
+
+                for subject, subject_concepts in subjects.items():
+                    areas.append(
+                        f"{subject} - {len(subject_concepts)} concepts need attention")
+                    recommendations.append(f"Focus on {subject} fundamentals")
+                    recommendations.append(
+                        f"Practice more {subject} exercises")
+
+            return {
+                'concepts': concepts,
+                'areas': areas,
+                'recommendations': recommendations
+            }
 
 
 class RecommendationService:

@@ -1,1 +1,0 @@
-Explain perceptron and generate one MCQ about it.

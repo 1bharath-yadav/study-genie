@@ -32,9 +32,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configuration
-google_api_key = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=google_api_key)
+# Configuration - No global API key, only use student's API key
+# google_api_key = os.getenv("GEMINI_API_KEY")  # Removed global API key
+# genai.configure(api_key=google_api_key)  # No global configuration
 
 logger = logging.getLogger("enhanced_rag_pipeline")
 logging.basicConfig(level=logging.INFO)
@@ -48,7 +48,7 @@ DEFAULT_ALPHA = 0.75
 LEARNING_CONTENT_SCHEMA = {
     "type": "object",
     "properties": {
-        # Metadata extraction
+        # Metadata extraction (always included)
         "metadata": {
             "type": "object",
             "description": "Automatically extracted metadata about the content",
@@ -78,10 +78,17 @@ LEARNING_CONTENT_SCHEMA = {
             "required": ["subject_name", "chapter_name", "concept_name", "difficulty_level"]
         },
 
-        # 15 flashcards
+        # Content type requested by user
+        "content_type": {
+            "type": "string",
+            "enum": ["flashcards", "quiz", "match_the_following", "summary", "all"],
+            "description": "Type of content requested by the user"
+        },
+
+        # 15 flashcards (only when requested)
         "flashcards": {
             "type": "array",
-            "description": "A set of exactly 15 flashcards summarizing important key concepts.",
+            "description": "A set of exactly 15 flashcards summarizing important key concepts. Only include if user requests flashcards.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -111,10 +118,10 @@ LEARNING_CONTENT_SCHEMA = {
             }
         },
 
-        # 10 quiz questions
+        # 10 quiz questions (only when requested)
         "quiz": {
             "type": "array",
-            "description": "A set of exactly 10 quiz questions for practice, each with options, correct answers, and explanations.",
+            "description": "A set of exactly 10 quiz questions for practice. Only include if user requests quiz.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -140,10 +147,10 @@ LEARNING_CONTENT_SCHEMA = {
             }
         },
 
-        # Match the following section
+        # Match the following section (only when requested)
         "match_the_following": {
             "type": "object",
-            "description": "A 'match the following' exercise with two columns (A and B) and correct mappings.",
+            "description": "A 'match the following' exercise with two columns (A and B) and correct mappings. Only include if user requests this.",
             "properties": {
                 "columnA": {
                     "type": "array",
@@ -177,20 +184,20 @@ LEARNING_CONTENT_SCHEMA = {
             "required": ["columnA", "columnB", "mappings"]
         },
 
-        # Summary
+        # Summary (always included)
         "summary": {
             "type": "string",
             "description": "Comprehensive, concise summary of all key concepts covered."
         },
 
-        # Learning objectives
+        # Learning objectives (always included)
         "learning_objectives": {
             "type": "array",
             "items": {"type": "string"},
             "description": "List of learning objectives for the given topic."
         }
     },
-    "required": ["metadata", "flashcards", "quiz", "match_the_following", "summary", "learning_objectives"]
+    "required": ["metadata", "content_type", "summary", "learning_objectives"]
 }
 
 
@@ -294,22 +301,69 @@ async def perform_document_chunking(documents: List[Document]) -> List[Document]
     return chunks
 
 
-async def setup_vector_store_and_retriever(chunks: List[Document]) -> Tuple[FAISS, EnsembleRetriever]:
+async def setup_vector_store_and_retriever(chunks: List[Document], user_api_key: str) -> Tuple[FAISS, EnsembleRetriever]:
     """
     Setup vector store using FAISS and create hybrid retriever
     """
-    # Initialize Gemini embeddings
+    # Validate that user has provided API key
+    if not user_api_key:
+        raise ValueError(
+            "API key is required. Please add your Gemini API key in settings.")
+
+    # Clean the API key - remove any whitespace or control characters
+    clean_api_key = user_api_key.strip()
+
+    # Additional validation
+    if not clean_api_key:
+        raise ValueError(
+            "API key is empty after cleaning. Please check your API key in settings.")
+
+    logger.info(f"Using API key of length {len(clean_api_key)} for embeddings")
+
+    # Test API key validity first before using it for embeddings
+    try:
+        # Configure genai with the API key and test it
+        genai.configure(api_key=clean_api_key)
+
+        # Create a simple test model to validate the API key
+        test_model = GenerativeModel('gemini-2.0-flash-exp')
+
+        # Test with a simple generation to validate the key works
+        test_response = test_model.generate_content("Hello")
+        logger.info("API key validation successful - key works with Gemini")
+
+    except Exception as e:
+        logger.error(f"API key validation failed: {e}")
+        # Try to provide more specific error info
+        if "API_KEY_INVALID" in str(e):
+            raise ValueError(
+                f"Invalid API key provided. Please check your Gemini API key: {e}")
+        elif "quota" in str(e).lower():
+            raise ValueError(f"API key quota exceeded: {e}")
+        else:
+            raise ValueError(f"API key validation failed: {e}")
+
+    # Initialize Gemini embeddings with user's API key
     from pydantic import SecretStr
 
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001",
-        google_api_key=SecretStr(
-            google_api_key) if google_api_key is not None else None
-    )
+    try:
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=SecretStr(clean_api_key)
+        )
+        logger.info("Successfully initialized Google Generative AI embeddings")
+    except Exception as e:
+        logger.error(f"Failed to initialize embeddings with API key: {e}")
+        raise ValueError(f"Invalid API key for embeddings: {e}")
 
     # Create FAISS vector store
-    vector_store = FAISS.from_documents(chunks, embeddings)
-    logger.info(f"Stored {len(chunks)} chunks in FAISS vector store")
+    try:
+        vector_store = FAISS.from_documents(chunks, embeddings)
+        logger.info(f"Stored {len(chunks)} chunks in FAISS vector store")
+    except Exception as e:
+        logger.error(f"Failed to create vector store: {e}")
+        raise ValueError(
+            f"Failed to create embeddings - check your API key: {e}")
 
     # Setup vector retriever
     vector_retriever = vector_store.as_retriever(
@@ -385,14 +439,99 @@ Content: {content}
     return "\n".join(context_parts)
 
 
-async def generate_structured_response(context: str, query: str) -> Dict[str, Any]:
+async def generate_structured_response(context: str, query: str, user_api_key: str, content_type: str = "all") -> Dict[str, Any]:
     """
     Generate structured learning content using direct Gemini API with structured output
     """
     try:
+        # Validate that user has provided API key
+        if not user_api_key:
+            raise ValueError(
+                "API key is required. Please add your Gemini API key in settings.")
+
+        # Validate API key format
+        user_api_key = user_api_key.strip()  # Remove any whitespace
+        if not user_api_key.startswith("AIza"):
+            logger.error(
+                f"Invalid API key format. Gemini API keys should start with 'AIza'. Received: {user_api_key[:10]}...")
+            raise ValueError(
+                "Invalid API key format. Gemini API keys should start with 'AIza'.")
+
+        # Determine what content to generate based on user request
+        query_lower = query.lower()
+        logger.info(f"🔍 Content detection - query_lower: '{query_lower}'")
+        logger.info(f"🔍 Initial content_type: '{content_type}'")
+
+        if content_type == "all":
+            # Auto-detect based on query content - check for multiple content types
+            has_flashcards = "flashcard" in query_lower
+            has_quiz = "quiz" in query_lower
+            has_match = "match" in query_lower or "matching" in query_lower
+            has_summary = "summary" in query_lower
+
+            logger.info(
+                f"🔍 Detection results - flashcards:{has_flashcards}, quiz:{has_quiz}, match:{has_match}, summary:{has_summary}")
+
+            # If multiple content types are requested, use "all"
+            content_types_count = sum([has_flashcards, has_quiz, has_match])
+            logger.info(f"🔍 Content types count: {content_types_count}")
+
+            if content_types_count > 1:
+                content_type = "all"
+            elif has_flashcards:
+                content_type = "flashcards"
+            elif has_quiz:
+                content_type = "quiz"
+            elif has_match:
+                content_type = "match_the_following"
+            elif has_summary:
+                content_type = "summary"
+            else:
+                content_type = "all"
+
+        logger.info(f"🔍 Final content_type: '{content_type}'")
+
+        # Create conditional prompt based on content type
+        if content_type == "flashcards":
+            content_instructions = """
+            Generate exactly 15 flashcards covering the key concepts from the content.
+            Each flashcard should have a question, answer, and difficulty level.
+            """
+        elif content_type == "quiz":
+            content_instructions = """
+            Generate exactly 10 quiz questions with multiple choice options.
+            Each question should have 3-5 options, correct answer, and explanation.
+            """
+        elif content_type == "match_the_following":
+            content_instructions = """
+            Create a match-the-following exercise with two columns (A and B) and correct mappings.
+            Include at least 5-8 items in each column with their correct pairings.
+            """
+        elif content_type == "summary":
+            content_instructions = """
+            Provide a comprehensive summary of all key concepts covered.
+            Focus on the main ideas and important details.
+            """
+        else:  # "all"
+            content_instructions = """
+            Generate comprehensive study materials including ALL of the following sections:
+            1. Exactly 15 flashcards covering key concepts (REQUIRED - must be present)
+            2. Exactly 10 quiz questions with multiple choice options (REQUIRED - must be present)
+            3. A match-the-following exercise with 2 columns and correct mappings (REQUIRED - must be present)
+            4. A comprehensive summary (REQUIRED - must be present)
+            5. Learning objectives (REQUIRED - must be present)
+            
+            CRITICAL: You MUST include the "match_the_following" field in your JSON response with:
+            - "columnA": array of items (at least 5-8 items)
+            - "columnB": array of corresponding matches 
+            - "mappings": array of correct A-B pairings
+            
+            Do not skip the match_the_following section - it is mandatory when content_type is "all".
+            """
+
         # Create the prompt
         prompt = f"""
-        Based on the following educational content and user query, generate comprehensive study materials including flashcards, quiz questions, match-the-following exercises, and metadata.
+        Based on the following educational content and user query, generate study materials as requested.
 
         CONTENT:
         {context}
@@ -400,20 +539,46 @@ async def generate_structured_response(context: str, query: str) -> Dict[str, An
         USER QUERY:
         {query}
 
+        CONTENT TYPE REQUESTED: {content_type}
+
         Please extract the following information and generate study materials:
         1. Automatically identify the subject, chapter, and concept from the content
-        2. Create exactly 15 flashcards covering key concepts
-        3. Create exactly 10 quiz questions with multiple choice options
-        4. Create a match-the-following exercise
-        5. Provide a comprehensive summary
-        6. List learning objectives
-        7. Determine appropriate difficulty level
+        2. Set the content_type field to: "{content_type}"
+        3. {content_instructions}
+        4. Always provide a comprehensive summary and learning objectives
+        5. Determine appropriate difficulty level
+
+        IMPORTANT SCHEMA REQUIREMENTS:
+        - Your response MUST be valid JSON that strictly follows the provided schema
+        - When content_type is "all", you MUST include ALL required fields: metadata, content_type, flashcards, quiz, match_the_following, summary, learning_objectives
+        - Do NOT omit the match_the_following field when content_type is "all"
+        - The match_the_following field must contain: columnA (array), columnB (array), mappings (array)
 
         Focus on creating high-quality educational content that helps with active learning and retention.
         """
 
-        # Initialize Gemini model
-        model = GenerativeModel('gemini-2.0-flash-exp')
+        # Configure genai with user's API key and create model
+        # Clean the API key first
+        clean_api_key = user_api_key.strip()
+        logger.info(
+            f"Creating Gemini model with API key: {clean_api_key[:10]}...{clean_api_key[-5:] if len(clean_api_key) > 15 else clean_api_key}")
+
+        # Clear any existing configuration and set user's API key
+        try:
+            # Configure with user's API key - this MUST be done before creating the model
+            genai.configure(api_key=clean_api_key)
+
+            # Verify the configuration worked by testing the API key
+            # This will fail fast if the API key is invalid
+            model = GenerativeModel('gemini-2.0-flash')
+
+            logger.info("Successfully configured Gemini with user's API key")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to configure Gemini with user's API key: {e}")
+            raise ValueError(
+                f"Invalid API key or Gemini configuration failed: {e}")
 
         # Generate content with structured output
         response = model.generate_content(
@@ -426,23 +591,34 @@ async def generate_structured_response(context: str, query: str) -> Dict[str, An
 
         # Parse the JSON response
         result = json.loads(response.text)
+        logger.info("🎯 LLM Response keys: %s", list(result.keys())
+                    if isinstance(result, dict) else "Not a dict")
+        if isinstance(result, dict):
+            logger.info("🎯 LLM Response match_the_following: %s",
+                        result.get('match_the_following', 'KEY_NOT_FOUND'))
         logger.info(
-            "Successfully generated structured learning content using direct Gemini API")
+            "Successfully generated structured learning content using user's Gemini API")
         return result
 
     except Exception as e:
         logger.error(f"Error generating structured response: {str(e)}")
         raise
-
-
 # Main pipeline function
 
 
-async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, temp_dir: str) -> Dict[str, Any]:
+async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, temp_dir: str, user_api_key: str) -> Dict[str, Any]:
     """
     Complete RAG pipeline for generating structured learning content
     """
     try:
+        # Validate that user has provided API key
+        if not user_api_key:
+            return {
+                "status": "error",
+                "error": "API key is required. Please add your Gemini API key in settings to continue.",
+                "error_type": "missing_api_key"
+            }
+
         logger.info("Starting enhanced RAG pipeline...")
 
         # Step 1: Load documents from files
@@ -453,9 +629,9 @@ async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, te
         logger.info("Chunking documents for optimal processing...")
         chunks = await perform_document_chunking(documents)
 
-        # Step 3: Setup vector store and hybrid retriever
+        # Step 3: Setup vector store and hybrid retriever with user's API key
         logger.info("Setting up vector store and hybrid retrieval system...")
-        vector_store, hybrid_retriever = await setup_vector_store_and_retriever(chunks)
+        vector_store, hybrid_retriever = await setup_vector_store_and_retriever(chunks, user_api_key)
 
         # Step 4: Retrieve relevant content using hybrid search
         logger.info(f"Retrieving relevant content for query: '{userprompt}'")
@@ -467,39 +643,52 @@ async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, te
         # Step 6: Format context for LLM processing
         formatted_context = format_context_for_llm(enhanced_docs)
 
-        # Step 7: Generate structured response
+        # Step 7: Generate structured response with user's API key
         logger.info("Generating structured learning content...")
-        response = await generate_structured_response(formatted_context, userprompt)
+
+        # Auto-detect content type from user prompt
+        content_type = "all"  # default
+        userprompt_lower = userprompt.lower()
+
+        # Check for multiple content types
+        has_flashcards = "flashcard" in userprompt_lower
+        has_quiz = "quiz" in userprompt_lower
+        has_match = "match" in userprompt_lower or "matching" in userprompt_lower
+        has_summary = "summary" in userprompt_lower
+
+        # If multiple content types are requested, use "all"
+        content_types_count = sum([has_flashcards, has_quiz, has_match])
+
+        if content_types_count > 1:
+            content_type = "all"
+        elif has_flashcards:
+            content_type = "flashcards"
+        elif has_quiz:
+            content_type = "quiz"
+        elif has_match:
+            content_type = "match_the_following"
+        elif has_summary:
+            content_type = "summary"
+
+        logger.info(
+            f"Detected content type: {content_type} (flashcards:{has_flashcards}, quiz:{has_quiz}, match:{has_match})")
+        logger.info(f"User prompt was: '{userprompt}'")
+        logger.info(f"Content types count: {content_types_count}")
+
+        response = await generate_structured_response(formatted_context, userprompt, user_api_key, content_type)
 
         return response
+    except ValueError as ve:
+        logger.error("Validation error in get_llm_response: %s", ve)
+        return {
+            "status": "error",
+            "error": str(ve),
+            "error_type": "validation_error"
+        }
     except Exception as e:
         logger.exception("Error in get_llm_response: %s", e)
-        return {"status": "error", "error": str(e)}
-# Utility functions for additional functionality
-
-
-async def get_retrieval_metrics(retriever_response: List[Document]) -> Dict[str, Any]:
-    """
-    Calculate metrics about the retrieval process
-    """
-    return {
-        "retrieved_chunks": len(retriever_response),
-        "average_chunk_size": sum(len(doc.page_content) for doc in retriever_response) / len(retriever_response),
-        "unique_sources": len(set(doc.metadata.get('source_file') for doc in retriever_response)),
-        "content_types": list(set(doc.metadata.get('file_type') for doc in retriever_response))
-    }
-
-
-async def optimize_chunk_parameters(documents: List[Document]) -> Tuple[int, int]:
-    """
-    Dynamically optimize chunking parameters based on document characteristics
-    """
-    total_length = sum(len(doc.page_content) for doc in documents)
-    avg_doc_length = total_length / len(documents) if documents else 0
-
-    if avg_doc_length < 2000:
-        return 800, 100  # Smaller chunks for short documents
-    elif avg_doc_length > 10000:
-        return 1500, 300  # Larger chunks for long documents
-    else:
-        return DEFAULT_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": "processing_error"
+        }

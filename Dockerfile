@@ -18,8 +18,8 @@ RUN uv sync
 # Copy project
 COPY . .
 
-# Expose port (adjust if your backend runs on a different port)
-EXPOSE 8000
+# Expose port (Hugging Face Spaces uses port 7860)
+EXPOSE 7860
 
 # Start the backend (adjust the command as per your backend entrypoint)
-CMD ["uv", "icorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "reload"]
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]

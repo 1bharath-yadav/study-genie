@@ -42,6 +42,7 @@ class StudentCreate(BaseModel):
     email: str = Field(..., pattern=r'^[^@]+@[^@]+\.[^@]+$')
     full_name: str = Field(..., min_length=2, max_length=100)
     learning_preferences: Optional[Dict[str, Any]] = {}
+    gemini_api_key: Optional[str] = None
 
 
 class StudentResponse(BaseModel):
@@ -50,11 +51,37 @@ class StudentResponse(BaseModel):
     email: str
     full_name: str
     message: str
+    has_api_key: bool = False
 
 
 class StudentUpdate(BaseModel):
     full_name: Optional[str] = None
     learning_preferences: Optional[Dict[str, Any]] = None
+
+
+class ApiKeyRequest(BaseModel):
+    api_key: str = Field(..., min_length=30, max_length=100)
+
+    @validator('api_key')
+    def validate_api_key(cls, v):
+        if not v.startswith('AIza'):
+            raise ValueError('Invalid Gemini API key format')
+        return v.strip()
+
+
+class ApiKeyResponse(BaseModel):
+    has_api_key: bool
+    message: str
+
+
+class ApiKeyUpdateRequest(BaseModel):
+    new_api_key: str = Field(..., min_length=30, max_length=100)
+
+    @validator('new_api_key')
+    def validate_api_key(cls, v):
+        if not v.startswith('AIza'):
+            raise ValueError('Invalid Gemini API key format')
+        return v.strip()
 
 # Core LLM Response Models
 
@@ -67,7 +94,7 @@ class FlashcardData(BaseModel):
 
 class QuizData(BaseModel):
     question: str
-    options: List[str] = Field(..., min_items=2, max_items=6)
+    options: List[str] = Field(default_factory=list)
     correct_answer: str
     explanation: str
 
@@ -75,6 +102,7 @@ class QuizData(BaseModel):
 class LLMResponseContent(BaseModel):
     flashcards: Dict[str, FlashcardData] = Field(default_factory=dict)
     quiz: Dict[str, QuizData] = Field(default_factory=dict)
+    match_the_following: Optional[Dict[str, Any]] = None
     summary: str = ""
     learning_objectives: List[str] = Field(default_factory=list)
 
@@ -118,6 +146,22 @@ class ProcessedLLMResponse(BaseModel):
     created_entities: CreatedEntities
     message: str
 
+
+class ProcessFilesResponse(BaseModel):
+    """Frontend-compatible response format"""
+    task_id: str
+    status: str = "completed"  # 'processing' | 'completed' | 'failed'
+    content: Optional[LLMResponseContent] = None
+    error: Optional[str] = None
+
+    # Metadata from LLM response for context tracking
+    metadata: Optional[Dict[str, Any]] = None
+    subject_name: Optional[str] = None
+    chapter_name: Optional[str] = None
+    concept_name: Optional[str] = None
+    difficulty_level: Optional[str] = None
+    estimated_study_time: Optional[str] = None
+
 # Progress Models
 
 
@@ -156,6 +200,33 @@ class StudentProgressResponse(BaseModel):
     total_concepts: int
     mastered_concepts: int
     weak_concepts: int
+
+# Learning Activity Models
+
+
+class LearningActivityRequest(BaseModel):
+    """Request model for learning activity tracking"""
+    activity_type: ActivityType
+    correct_answers: int = Field(..., ge=0)
+    total_questions: int = Field(..., gt=0)
+    time_spent: Optional[int] = Field(None, ge=0)  # in seconds
+    difficulty_level: DifficultyLevel = DifficultyLevel.MEDIUM
+
+    # Context information (should be provided by frontend)
+    subject_name: Optional[str] = None
+    chapter_name: Optional[str] = None
+    concept_name: Optional[str] = None
+
+    # Additional metadata
+    session_id: Optional[str] = None
+    # e.g., "llm_generated", "manual_upload"
+    content_source: Optional[str] = None
+
+    @validator('total_questions')
+    def validate_total_questions(cls, v, values):
+        if 'correct_answers' in values and v < values['correct_answers']:
+            raise ValueError('Total questions must be >= correct answers')
+        return v
 
 # Weakness Models
 
