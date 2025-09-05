@@ -1,3 +1,13 @@
+---
+title: Study AI Backend
+emoji: 🎓
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+license: mit
+---
+
 # StudyGenie: AI-Powered Personalized Learning Platform
 *Comprehensive Project Presentation for Mentors*
 
