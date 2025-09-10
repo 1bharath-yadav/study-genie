@@ -101,9 +101,11 @@ class AuthService:
         This should only be called by internal services
         """
         try:
+            logger.info(f"Retrieving API key for student_id: {student_id}")
             api_key = await self.supabase.get_api_key(student_id)
             if api_key:
-                logger.info(f"Retrieved API key for student {student_id}")
+                logger.info(
+                    f"Retrieved API key for student {student_id}: {api_key[:10]}...{api_key[-5:] if len(api_key) > 15 else '***'}")
                 return api_key
             else:
                 logger.warning(f"No API key found for student {student_id}")

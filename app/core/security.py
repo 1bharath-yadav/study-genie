@@ -21,8 +21,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db_manager: Data
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        # Debug: Log the token (first 20 chars only for security)
-        print(f"Debug: Validating token: {token[:20]}...")
+        # Debug: Log the token hash for unique identification
+        import hashlib
+        token_hash = hashlib.md5(token.encode()).hexdigest()[:8]
+        print(f"Debug: Validating token (hash: {token_hash})")
 
         payload = jwt.decode(token, settings.JWT_SECRET,
                              algorithms=[settings.ALGORITHM])
@@ -32,7 +34,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db_manager: Data
             print("Debug: No 'sub' field in JWT payload")
             raise credentials_exception
 
-        # Debug: Log payload keys
+        # Debug: Log more detailed payload info including user identification
+        student_id = payload.get("student_id") or payload.get("sub")
+        email = payload.get("email")
+        print(f"Debug: JWT payload - student_id: {student_id}, email: {email}")
         print(f"Debug: JWT payload keys: {list(payload.keys())}")
 
         # Return the user data directly from JWT payload
@@ -49,7 +54,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db_manager: Data
             "updated_at": payload.get("iat")
         }
 
-        print(f"Debug: Validated user: {user_data.get('email')}")
+        print(f"Debug: Validated user - ID: {student_id}, Email: {email}")
         return user_data
 
     except JWTError as e:

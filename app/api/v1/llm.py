@@ -189,9 +189,13 @@ async def upload_and_process_simple(
 
         # Get authenticated user ID
         student_id = current_user.get("student_id") or current_user.get("sub")
+        student_email = current_user.get("email")
         if not student_id:
             raise HTTPException(
                 status_code=401, detail="User not authenticated")
+
+        logger.info(
+            f"Processing LLM request for student_id: {student_id}, email: {student_email}")
 
         # Get user's API key
         llm_key_service = get_llm_key_service()
@@ -201,6 +205,9 @@ async def upload_and_process_simple(
                 status_code=400,
                 detail="API key not found. Please add your Gemini API key in settings before uploading files."
             )
+
+        logger.info(
+            f"Using API key for student {student_id}: {user_api_key[:10]}...{user_api_key[-5:] if len(user_api_key) > 15 else '***'}")
 
         # Process files using LangChain LLM with metadata extraction
         raw_llm_response = await get_llm_response(
@@ -274,9 +281,13 @@ async def upload_and_process_files(
 
         # Get authenticated user ID
         student_id = current_user.get("student_id") or current_user.get("sub")
+        student_email = current_user.get("email")
         if not student_id:
             raise HTTPException(
                 status_code=401, detail="User not authenticated")
+
+        logger.info(
+            f"Processing upload-and-process for student_id: {student_id}, email: {student_email}")
 
         # Get user's API key
         llm_key_service = get_llm_key_service()
