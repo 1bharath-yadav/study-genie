@@ -31,12 +31,16 @@ class Settings(BaseSettings):
     API_RELOAD: bool = os.getenv("API_RELOAD", "true").lower() == "true"
 
     # Supabase configuration
-    NEXT_PUBLIC_SUPABASE_URL: Optional[str] = os.getenv(
-        "NEXT_PUBLIC_SUPABASE_URL")
+    SUPABASE_URL: Optional[str] = os.getenv(
+        "SUPABASE_URL")
     NEXT_PUBLIC_SUPABASE_ANON_KEY: Optional[str] = os.getenv(
         "NEXT_PUBLIC_SUPABASE_ANON_KEY")
-    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = os.getenv(
-        "SUPABASE_SERVICE_ROLE_KEY")
+    SUPABASE_API_KEY: Optional[str] = os.getenv(
+        "SUPABASE_API_KEY")
+    SUPABASE_JWT_SECRET: Optional[str] = os.getenv(
+        "SUPABASE_JWT_SECRET")
+    SUPABASE_JWT_ALGORITHM: str = os.getenv(
+        "SUPABASE_JWT_ALGORITHM", "HS256")
 
     class Config:
         env_file = ".env"

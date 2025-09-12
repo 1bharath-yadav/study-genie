@@ -36,6 +36,9 @@ dependencies = [
 	"postgrest>=0.16.8",
 	"storage3>=0.7.7",
 	"gotrue>=2.8.2",
+	"pydantic-ai>=1.0.3",
+	"unstructured>=0.18.14",
+	"pillow>=11.3.0",
 ]
 
 [project.optional-dependencies]

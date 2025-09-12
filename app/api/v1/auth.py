@@ -4,149 +4,115 @@ import httpx
 import jwt
 import logging
 from datetime import datetime, timedelta
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode
+
 from app.config import settings
-from app.core.auth_service import get_auth_service
+from app.core.auth_service import handle_user_signin
 from app.core.security import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def create_custom_jwt_token(user_data: dict) -> str:
+    """
+    Create a custom JWT token for users (primarily for Google OAuth flow)
+    """
+    jwt_payload = {
+        "sub": user_data.get("sub") or user_data.get("id"),
+        "student_id": user_data.get("sub") or user_data.get("id"),
+        "email": user_data.get("email"),
+        "name": user_data.get("name"),
+        "picture": user_data.get("picture"),
+        "api_key_status": user_data.get("api_key_status"),
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(hours=24)).timestamp()),
+        "iss": f"{settings.SUPABASE_URL}/auth/v1" if settings.SUPABASE_URL else "study-genie",
+        "aud": "authenticated",
+        "role": "authenticated"
+    }
+    return jwt.encode(jwt_payload, settings.JWT_SECRET, algorithm=settings.ALGORITHM)
+
+
 @router.get("/auth/login")
 def login():
-    google_auth_url = (
-        f"{settings.GOOGLE_AUTH_URL}?"
-        f"client_id={settings.GOOGLE_CLIENT_ID}&"
-        "response_type=code&"
-        f"redirect_uri={settings.GOOGLE_REDIRECT_URI}&"
-        "scope=openid%20email%20profile&"
-        "access_type=offline&"
-        "prompt=consent"
-    )
-    logger.info(f"Generated Google Auth URL: {google_auth_url}")
-    return RedirectResponse(google_auth_url)
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    url = f"{settings.GOOGLE_AUTH_URL}?{urlencode(params)}"
+    return RedirectResponse(url)
 
 
 @router.get("/auth/callback")
 async def auth_callback(request: Request):
     try:
-        code = request.query_params.get("code")
-        error = request.query_params.get("error")
-
-        # Handle OAuth errors
+        code, error = request.query_params.get("code"), request.query_params.get("error")
         if error:
-            logger.error(f"OAuth error: {error}")
-            error_params = urlencode(
-                {"error": "oauth_error", "message": error})
-            return RedirectResponse(f"{settings.FRONTEND_URL}?{error_params}")
-
+            return RedirectResponse(f"{settings.FRONTEND_URL}?{urlencode({'error': error})}")
         if not code:
-            logger.error("Missing authorization code in callback")
-            error_params = urlencode({"error": "missing_code"})
-            return RedirectResponse(f"{settings.FRONTEND_URL}?{error_params}")
-
-        logger.info(f"Received authorization code: {code[:10]}...")
+            return RedirectResponse(f"{settings.FRONTEND_URL}?{urlencode({'error': 'missing_code'})}")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Exchange code for tokens
-            token_data = {
-                "code": code,
-                "client_id": settings.GOOGLE_CLIENT_ID,
-                "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": settings.GOOGLE_REDIRECT_URI,
-                "grant_type": "authorization_code",
-            }
-
-            logger.info("Exchanging code for access token...")
             token_resp = await client.post(
                 settings.GOOGLE_TOKEN_URL,
-                data=token_data,
+                data={
+                    "code": code,
+                    "client_id": settings.GOOGLE_CLIENT_ID,
+                    "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                    "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+                    "grant_type": "authorization_code",
+                },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
-
-            logger.info(f"Token response status: {token_resp.status_code}")
-
             if token_resp.status_code != 200:
-                logger.error(f"Token exchange failed: {token_resp.text}")
-                error_params = urlencode({"error": "token_exchange_failed"})
-                return RedirectResponse(f"{settings.FRONTEND_URL}?{error_params}")
+                return RedirectResponse(f"{settings.FRONTEND_URL}?{urlencode({'error': 'token_failed'})}")
 
-            tokens = token_resp.json()
-            access_token = tokens.get("access_token")
-
-            if not access_token:
-                logger.error("No access token received")
-                error_params = urlencode({"error": "no_access_token"})
-                return RedirectResponse(f"{settings.FRONTEND_URL}?{error_params}")
-
-            # Get user info from Google
-            logger.info("Fetching user info from Google...")
+            access_token = token_resp.json().get("access_token")
+            
             userinfo_resp = await client.get(
-                settings.GOOGLE_USERINFO_URL,
-                headers={"Authorization": f"Bearer {access_token}"},
+                settings.GOOGLE_USERINFO_URL, headers={
+                    "Authorization": f"Bearer {access_token}"}
             )
-
-            logger.info(
-                f"User info response status: {userinfo_resp.status_code}")
-
             if userinfo_resp.status_code != 200:
-                logger.error(f"Failed to get user info: {userinfo_resp.text}")
-                error_params = urlencode({"error": "userinfo_failed"})
-                return RedirectResponse(f"{settings.FRONTEND_URL}?{error_params}")
+                return RedirectResponse(f"{settings.FRONTEND_URL}?{urlencode({'error': 'userinfo_failed'})}")
 
             userinfo = userinfo_resp.json()
-            logger.info(f"User info received for: {userinfo.get('email')}")
 
-            # Handle user sign-in and API key retrieval
-            auth_service = get_auth_service()
-            signin_result = await auth_service.handle_user_signin(userinfo)
+        signin_result = await handle_user_signin(userinfo)
 
-            # Create JWT token with user data and API key status
-            jwt_payload = {
-                "sub": userinfo.get("sub"),
-                "email": userinfo.get("email"),
-                "name": userinfo.get("name"),
-                "picture": userinfo.get("picture"),
-                # Add student_id for consistency
-                "student_id": userinfo.get("sub"),
-                "api_key_status": signin_result["api_key_status"],
-                "iat": int(datetime.utcnow().timestamp()),
-                "exp": int((datetime.utcnow() + timedelta(hours=24)).timestamp())
-            }
+        # Create custom JWT token with proper structure
+        user_data = {
+            "sub": userinfo.get("sub"),
+            "email": userinfo.get("email"),
+            "name": userinfo.get("name"),
+            "picture": userinfo.get("picture"),
+            "api_key_status": signin_result["api_key_status"]
+        }
+        jwt_token = create_custom_jwt_token(user_data)
 
-            # You'll need to add JWT_SECRET to your settings
-            jwt_token = jwt.encode(
-                jwt_payload, settings.JWT_SECRET, algorithm="HS256")
-
-            # Redirect to frontend with just the JWT token
-            success_params = urlencode({"token": jwt_token})
-            frontend_redirect = f"{settings.FRONTEND_URL}?{success_params}"
-
-            logger.info("Redirecting to frontend with JWT token")
-            return RedirectResponse(frontend_redirect)
+        redirect_url = f"{settings.FRONTEND_URL}?{urlencode({'token': jwt_token})}"
+        logger.info(f"OAuth callback successful, redirecting to: {redirect_url[:100]}...")
+        return RedirectResponse(redirect_url)
 
     except Exception as e:
-        logger.error(
-            f"Unexpected error in auth callback: {str(e)}", exc_info=True)
-        error_params = urlencode({"error": "internal_error"})
-        return RedirectResponse(f"{settings.FRONTEND_URL}?{error_params}")
-
-# Helper endpoint to decode JWT on frontend
+        logger.error(f"Callback error: {e}", exc_info=True)
+        return RedirectResponse(f"{settings.FRONTEND_URL}?{urlencode({'error': 'internal_error'})}")
 
 
 @router.post("/auth/verify")
 async def verify_token(request: Request):
+    body = await request.json()
+    token = body.get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="Token required")
     try:
-        body = await request.json()
-        token = body.get("token")
-
-        if not token:
-            raise HTTPException(status_code=400, detail="Token required")
-
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=["HS256"])
         return {"valid": True, "user": payload}
-
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
@@ -155,30 +121,20 @@ async def verify_token(request: Request):
 
 @router.get("/auth/profile")
 async def get_user_profile(current_user: dict = Depends(get_current_user)):
-    """Get complete user profile including API key status"""
-    try:
-        student_id = current_user.get("student_id") or current_user.get("sub")
-        if not student_id:
-            raise HTTPException(
-                status_code=401, detail="User not authenticated")
+    student_id = current_user.get("student_id") or current_user.get("sub")
+    if not student_id:
+        raise HTTPException(status_code=401, detail="User not authenticated")
 
-        auth_service = get_auth_service()
+    signin_result = await handle_user_signin(current_user)
 
-        # Get fresh API key status
-        signin_result = await auth_service.handle_user_signin(current_user)
+    return {
+        "user": {
+            "id": student_id,
+            "email": current_user.get("email"),
+            "name": current_user.get("name"),
+            "picture": current_user.get("picture"),
+        },
+        "api_key_status": signin_result["api_key_status"],
+        "last_updated": datetime.now().isoformat(),
+    }
 
-        return {
-            "user": {
-                "id": student_id,
-                "email": current_user.get("email"),
-                "name": current_user.get("name"),
-                "picture": current_user.get("picture")
-            },
-            "api_key_status": signin_result["api_key_status"],
-            "last_updated": datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        logger.error(f"Error getting user profile: {e}")
-        raise HTTPException(
-            status_code=500, detail="Error retrieving user profile")
