@@ -103,7 +103,7 @@ CRUD operations for student data. Requires authentication.
           "id": "string",
           "name": "string",
           "email": "string",
-          "user_id": "string",
+          "student_id": "string",
           "created_at": "string"
         }
         ```

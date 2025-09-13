@@ -1,75 +1,70 @@
-# Pure functional provider and model routes
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Optional
-from app.models import ProviderResponse, ModelResponse, LLMProvider, ModelType
-from app.llm.provider_service import (
-    get_available_providers,
-    get_models_for_provider,
-    get_model_by_id,
-    get_chat_models,
-    get_embedding_models,
-    get_user_available_models,
-)
+from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import get_current_user
+from app.llm.providers import get_provider_list, get_models_for_provider
+from typing import Dict, Any
+from app.services import model_preference_service
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
+@router.get("/")
+async def list_providers(current_user: dict = Depends(get_current_user)):
+    """Return the list of available providers from PROVIDERS_JSON."""
+    return get_provider_list()
 
-@router.get("/", response_model=List[ProviderResponse])
-async def get_providers():
-    """Get all available LLM providers."""
-    return get_available_providers()
+@router.get("/{provider_name}/models")
+async def models_by_provider(provider_name: str, current_user: dict = Depends(get_current_user)):
+    """Return models for a specific provider."""
+    models = get_models_for_provider(provider_name)
+    # If user available, annotate models with user's saved preferences
+    student_id = None
+    if current_user:
+        student_id = current_user.get("sub") or current_user.get("student_id")
+    if not student_id:
+        return models
 
-
-@router.get("/{provider}/models", response_model=List[ModelResponse])
-async def get_provider_models(provider: LLMProvider):
-    """Get all models for a specific provider."""
-    return get_models_for_provider(provider)
-
-
-@router.get("/models/chat", response_model=List[ModelResponse])
-async def get_chat_models_endpoint(provider: Optional[LLMProvider] = None):
-    """Get all chat models, optionally filtered by provider."""
-    return get_chat_models(provider)
-
-
-@router.get("/models/embedding", response_model=List[ModelResponse])
-async def get_embedding_models_endpoint(provider: Optional[LLMProvider] = None):
-    """Get all embedding models, optionally filtered by provider."""
-    return get_embedding_models(provider)
-
-
-@router.get("/models/{model_id}", response_model=ModelResponse)
-async def get_model_by_id_endpoint(model_id: str):
-    """Get a specific model by ID."""
-    model = get_model_by_id(model_id)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found")
-    return model
+    prefs = model_preference_service.list_model_preferences(student_id)
+    # Build lookup maps for chat/embedding active flags
+    chat_active = {p.get("model_id") for p in prefs if p and p.get("use_for_chat")}
+    embed_active = {p.get("model_id") for p in prefs if p and p.get("use_for_embedding")}
+    # Annotate models with per-use-case active flags
+    for m in models:
+        m_id = m.get("id")
+        m["is_active_chat"] = m_id in chat_active
+        m["is_active_embedding"] = m_id in embed_active
+    return models
 
 
-@router.get("/models/available/chat", response_model=List[ModelResponse])
-async def get_user_chat_models(
-    current_user: dict = Depends(get_current_user)
-):
-    """Get chat models available to the current user based on their API keys."""
-    user_id = current_user["id"]
-    return get_user_available_models(user_id, ModelType.CHAT)
+@router.post("/models/{model_id}/active")
+async def activate_model(model_id: str, use_case: str = 'chat', current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Activate (persist) a model preference for the current user."""
+    student_id = current_user.get("sub") or current_user.get("student_id")
+    if not student_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    # model_id is formatted as provider-model_name (e.g., google-gemini-2.0-flash)
+    parts = model_id.split('-', 1)
+    if len(parts) != 2:
+        raise HTTPException(status_code=400, detail="Invalid model_id format")
+    provider_name = parts[0]
+    pref = model_preference_service.activate_model_for_user(student_id, model_id, provider_name, use_case)
+    if not pref:
+        raise HTTPException(status_code=500, detail="Failed to activate model")
+    return pref
 
 
-@router.get("/models/available/embedding", response_model=List[ModelResponse])
-async def get_user_embedding_models(
-    current_user: dict = Depends(get_current_user)
-):
-    """Get embedding models available to the current user based on their API keys."""
-    user_id = current_user["id"]
-    return get_user_available_models(user_id, ModelType.EMBEDDING)
+@router.delete("/models/{model_id}/active")
+async def deactivate_model(model_id: str, use_case: str = 'chat', current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Deactivate (remove) a model preference for the current user."""
+    student_id = current_user.get("sub") or current_user.get("student_id")
+    if not student_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    ok = model_preference_service.deactivate_model_for_user(student_id, model_id, use_case)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to deactivate model")
+    return {"success": True}
 
-
-@router.get("/models/available", response_model=List[ModelResponse])
-async def get_user_all_available_models(
-    current_user: dict = Depends(get_current_user)
-):
-    """Get all models available to the current user based on their API keys."""
-    user_id = current_user["id"]
-    return get_user_available_models(user_id)
+@router.get("/models/{model_type}")
+async def models_by_type(model_type: str, current_user: dict = Depends(get_current_user)):
+    """Return models for a given type across providers. For now this delegates to available models endpoint in models router."""
+    # Keep simple: reuse the models endpoints under /models/available/* which are handled elsewhere
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail="Use /models/available/{type} instead")

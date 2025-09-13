@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, Dict, Any
 import logging
 
-from app.core.security import get_current_user_id
+from app.core.security import get_current_student_id
 from app.services.analytics_service import (
     resolve_student_id,
     get_dashboard_analytics,
@@ -21,12 +21,12 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 @router.get("/dashboard")
 async def get_dashboard_analytics_endpoint(
     days: int = Query(default=30, description="Number of days to analyze"),
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get dashboard analytics data for the current authenticated user"""
     try:
-        # Resolve user_id to student_id
-        student_id = await resolve_student_id(current_user_id)
+        # Resolve student_id to student_id
+        student_id = await resolve_student_id(current_student_id)
         if not student_id:
             raise HTTPException(
                 status_code=404, 
@@ -53,7 +53,7 @@ async def get_dashboard_analytics_endpoint(
 async def get_student_dashboard_analytics_endpoint(
     student_identifier: str,
     days: int = Query(default=30, description="Number of days to analyze"),
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get dashboard analytics data for a specific student (admin/teacher access)"""
     try:
@@ -85,7 +85,7 @@ async def get_student_dashboard_analytics_endpoint(
 async def get_subject_wise_analytics_endpoint(
     student_identifier: str,
     days: int = Query(default=30, description="Number of days to analyze"),
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get detailed subject-wise analytics for a student"""
     try:
@@ -155,7 +155,7 @@ async def get_subject_wise_analytics_endpoint(
 async def get_progress_analytics_endpoint(
     student_identifier: str,
     subject_id: Optional[int] = None,
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get detailed progress analytics for subjects and concepts"""
     try:
@@ -219,7 +219,7 @@ async def get_progress_analytics_endpoint(
 @router.get("/{student_identifier}/achievements")
 async def get_achievements_endpoint(
     student_identifier: str,
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get student achievements and milestones"""
     try:
@@ -305,7 +305,7 @@ async def get_achievements_endpoint(
 async def get_weekly_trends_endpoint(
     student_identifier: str,
     weeks: int = Query(4, description="Number of weeks to look back"),
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get weekly performance trends"""
     try:
@@ -340,7 +340,7 @@ async def get_weekly_trends_endpoint(
 @router.get("/{student_identifier}/weaknesses")
 async def get_weakness_analysis_endpoint(
     student_identifier: str,
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get student's weak areas and improvement suggestions"""
     try:
@@ -379,7 +379,7 @@ async def get_weakness_analysis_endpoint(
 async def get_study_patterns_endpoint(
     student_identifier: str,
     days: int = Query(30, description="Number of days to analyze"),
-    current_user_id: str = Depends(get_current_user_id)
+    current_student_id: str = Depends(get_current_student_id)
 ) -> Dict[str, Any]:
     """Get study patterns and behavior analytics for a student"""
     try:

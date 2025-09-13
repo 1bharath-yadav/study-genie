@@ -9,7 +9,6 @@ import logging
 from dataclasses import dataclass
 
 from app.services.db import (
-    get_student_by_user_id,
     get_student_by_id
 )
 from app.db.db_client import get_supabase_client
@@ -332,12 +331,6 @@ async def resolve_student_id(student_identifier: str) -> Optional[str]:
         student = get_student_by_id(student_identifier)
         if student:
             return student_identifier
-        
-        # Try by user_id (email lookup)
-        if "@" in student_identifier:
-            student = get_student_by_user_id(student_identifier)
-            if student:
-                return student.get('student_id')
         
         logger.warning(f"Could not resolve student identifier: {student_identifier}")
         return None

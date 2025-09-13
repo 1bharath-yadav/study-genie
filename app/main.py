@@ -1,5 +1,5 @@
 """
-Main FastAPI application with Supabase integration - Pure Functional Version
+Main FastAPI application 
 """
 import logging
 from contextlib import asynccontextmanager
@@ -7,8 +7,8 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import functional routes
-from app.api.v1.main import router as v1_router
+# Import routes
+from app.api.v1.routers import router as v1_router
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app with lifespan management
 app = FastAPI(
     title="StudyGenie API",
-    description="AI-powered personalized learning platform - Pure Functional",
+    description="AI-powered personalized learning platform",
     version="3.0.0",
     lifespan=lifespan
 )
@@ -92,7 +92,7 @@ async def health_check():
 @app.get("/")
 async def root():
     return {
-        "message": "Welcome to StudyGenie API v3.0 - Pure Functional",
+        "message": "Welcome to StudyGenie API v3.0",
         "health": "/health",
         "docs": "/docs",
         "api": "/api/v1"

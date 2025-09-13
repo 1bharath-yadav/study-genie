@@ -1,9 +1,11 @@
+# app/api/v1/auth.py
+
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import RedirectResponse
 import httpx
 import jwt
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from app.config import settings
@@ -14,20 +16,20 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def create_custom_jwt_token(user_data: dict) -> str:
+def create_custom_jwt_token(student_data: dict) -> str:
     """
     Create a custom JWT token for users (primarily for Google OAuth flow)
     """
     jwt_payload = {
-        "sub": user_data.get("sub") or user_data.get("id"),
-        "student_id": user_data.get("sub") or user_data.get("id"),
-        "email": user_data.get("email"),
-        "name": user_data.get("name"),
-        "picture": user_data.get("picture"),
-        "api_key_status": user_data.get("api_key_status"),
-        "iat": int(datetime.utcnow().timestamp()),
-        "exp": int((datetime.utcnow() + timedelta(hours=24)).timestamp()),
-        "iss": f"{settings.SUPABASE_URL}/auth/v1" if settings.SUPABASE_URL else "study-genie",
+        "sub": student_data.get("sub"),
+        "student_id": student_data.get("sub"),
+        "email": student_data.get("email"),
+        "name": student_data.get("name"),
+        "picture": student_data.get("picture"),
+        "api_key_status": student_data.get("api_key_status"),
+        "iat": int(datetime.now(timezone.utc).timestamp()),
+        "exp": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp()),
+        "iss": f"{settings.SUPABASE_URL}/auth/v1",
         "aud": "authenticated",
         "role": "authenticated"
     }
@@ -86,14 +88,14 @@ async def auth_callback(request: Request):
         signin_result = await handle_user_signin(userinfo)
 
         # Create custom JWT token with proper structure
-        user_data = {
-            "sub": userinfo.get("sub"),
+        student_data = {
+            "sub": userinfo.get("sub"),  # sub is unique id per user,never use email for unique id
             "email": userinfo.get("email"),
             "name": userinfo.get("name"),
             "picture": userinfo.get("picture"),
             "api_key_status": signin_result["api_key_status"]
         }
-        jwt_token = create_custom_jwt_token(user_data)
+        jwt_token = create_custom_jwt_token(student_data)
 
         redirect_url = f"{settings.FRONTEND_URL}?{urlencode({'token': jwt_token})}"
         logger.info(f"OAuth callback successful, redirecting to: {redirect_url[:100]}...")

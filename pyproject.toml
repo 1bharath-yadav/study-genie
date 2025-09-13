@@ -21,7 +21,7 @@ dependencies = [
 	"rank_bm25",
 	"pydantic",
 	"langchain_community",
-	"langchain_google_genai",
+	"langchain-google-genai",
 	"langchain[google-genai]",
 	"pytest>=8.4.1",
 	"python-dotenv>=1.0.0",
@@ -39,6 +39,10 @@ dependencies = [
 	"pydantic-ai>=1.0.3",
 	"unstructured>=0.18.14",
 	"pillow>=11.3.0",
+	"langchain-cohere>=0.4.6",
+	"boto3>=1.40.28",
+	"langchain-mistralai>=0.2.11",
+	"langchain-huggingface>=0.3.1",
 ]
 
 [project.optional-dependencies]

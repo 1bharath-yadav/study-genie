@@ -1,658 +1,652 @@
-import os
-import json
+import asyncio
 import logging
-from typing import Dict, Any, List, Optional, Type, Union, Literal
-from pydantic import BaseModel, ValidationError, Field
-from enum import Enum
+from typing import List, Dict, Any, Tuple
+from pathlib import Path
 
-# PydanticAI imports
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.models.gemini import GeminiModel
-from pydantic_ai.models.anthropic import AnthropicModel
+# Direct Google Generative AI client
+# We no longer use the direct Google Generative AI client for chat generation.
+# Generation is done via per-user provider agents (pydantic-ai). Keep provider-specific
+# embedding implementations where available.
 
-# Google AI imports
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
+# Document loaders
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    TextLoader,
+    UnstructuredImageLoader,
+    UnstructuredFileLoader
+)
 
-# Supabase client
-from app.db.db_client import get_supabase_client
+# Text processing
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
 
-# Langchain for embeddings
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+# Retrieval and chains
+from langchain.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
 
 from dotenv import load_dotenv
+from pydantic_ai import StructuredDict
 
-from app.llm.process_files.file_process import (
-    enhance_retrieved_context,
-    format_context_for_llm,
-    load_documents_from_files,
-    perform_document_chunking,
-    setup_vector_store_and_retriever
-)
+from app.llm.types import LEARNING_CONTENT_SCHEMA
 
 load_dotenv()
 
-logger = logging.getLogger("multi_llm_provider")
+# Configuration - No global API key, only use student's API key
+# google_api_key = os.getenv("GEMINI_API_KEY")  # Removed global API key
+# genai.configure(api_key=google_api_key)  # No global configuration
+
+logger = logging.getLogger("enhanced_rag_pipeline")
 logging.basicConfig(level=logging.INFO)
 
 # Constants
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-DEFAULT_PROVIDER = "google"
-DEFAULT_MODEL = "gemini-2.0-flash"
-
-# Pydantic Models for structured output
-class DifficultyLevel(str, Enum):
-    EASY = "Easy"
-    MEDIUM = "Medium"
-    HARD = "Hard"
-
-class ContentMetadata(BaseModel):
-    """Automatically extracted metadata about the content"""
-    subject_name: str = Field(description="The main subject/domain")
-    chapter_name: str = Field(description="The chapter or topic name from the content")
-    concept_name: str = Field(description="The specific concept being studied")
-    difficulty_level: DifficultyLevel = Field(description="Assessed difficulty level based on content complexity")
-    estimated_study_time: Optional[str] = Field(default=None, description="Estimated time needed to complete all materials")
-
-class Flashcard(BaseModel):
-    """Individual flashcard"""
-    question: str = Field(description="The question for the flashcard")
-    answer: str = Field(description="The answer to the question")
-    key_concepts: Optional[str] = Field(default=None, description="Key concepts covered")
-    difficulty: DifficultyLevel = Field(description="Difficulty level of this flashcard")
-
-class QuizQuestion(BaseModel):
-    """Individual quiz question"""
-    question: str = Field(description="The quiz question")
-    options: List[str] = Field(description="List of answer options")
-    correct_answer: str = Field(description="The correct answer")
-    explanation: str = Field(description="Explanation of why this is correct")
-
-class MatchMapping(BaseModel):
-    """Match the following mapping"""
-    A: str = Field(description="Item from column A")
-    B: str = Field(description="Corresponding item from column B")
-
-class MatchTheFollowing(BaseModel):
-    """Match the following exercise"""
-    columnA: List[str] = Field(description="Items in column A")
-    columnB: List[str] = Field(description="Items in column B")
-    mappings: List[MatchMapping] = Field(description="Correct mappings between columns")
-
-class LearningContent(BaseModel):
-    """Complete learning content structure"""
-    metadata: ContentMetadata
-    content_type: Literal["flashcards", "quiz", "match_the_following", "summary", "all"]
-    flashcards: Optional[List[Flashcard]] = None
-    quiz: Optional[List[QuizQuestion]] = None
-    match_the_following: Optional[MatchTheFollowing] = None
-    summary: str = Field(description="Summary of the content")
-    learning_objectives: List[str] = Field(description="Learning objectives for this content")
-
-# Provider configuration mapping
-PROVIDER_CONFIGS: Dict[str, Dict[str, Any]] = {
-    "openai": {
-        "model_factory": lambda api_key, model_name=None: OpenAIModel(
-            model_name=model_name or "gpt-4", 
-            provider="openai"
-        ),
-        "embedding_handler": None,
-    },
-    "google": {
-        "model_factory": lambda api_key, model_name=None: GeminiModel(
-            model_name=model_name or "gemini-2.0-flash"
-        ),
-        "embedding_handler": lambda api_key: GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001", 
-            google_api_key=api_key
-        ),
-    },
-    "anthropic": {
-        "model_factory": lambda api_key, model_name=None: AnthropicModel(
-            model_name=model_name or "claude-3-5-sonnet-20241022"
-        ),
-        "embedding_handler": None,
-    }
-}
+DEFAULT_CHUNK_SIZE = 1200
+DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_TOP_K = 6
+DEFAULT_ALPHA = 0.75
 
 
-LEARNING_CONTENT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        # Metadata extraction (always included)
-        "metadata": {
-            "type": "object",
-            "description": "Automatically extracted metadata about the content",
-            "properties": {
-                "subject_name": {
-                    "type": "string",
-                    "description": "The main subject/domain (e.g., Mathematics, Physics, Computer Science, History, etc.)"
-                },
-                "chapter_name": {
-                    "type": "string",
-                    "description": "The chapter or topic name from the content (e.g., Neural Networks, Calculus, World War II, etc.)"
-                },
-                "concept_name": {
-                    "type": "string",
-                    "description": "The specific concept being studied (e.g., Perceptron, Derivatives, Treaty of Versailles, etc.)"
-                },
-                "difficulty_level": {
-                    "type": "string",
-                    "enum": ["Easy", "Medium", "Hard"],
-                    "description": "Assessed difficulty level based on content complexity"
-                },
-                "estimated_study_time": {
-                    "type": "string",
-                    "description": "Estimated time needed to complete all materials (e.g., '2-3 hours', '45 minutes')"
-                }
-            },
-            "required": ["subject_name", "chapter_name", "concept_name", "difficulty_level"]
-        },
-
-        # Content type requested by user
-        "content_type": {
-            "type": "string",
-            "enum": ["flashcards", "quiz", "match_the_following", "summary", "all"],
-            "description": "Type of content requested by the user"
-        },
-
-        # 15 flashcards (only when requested)
-        "flashcards": {
-            "type": "array",
-            "description": "A set of exactly 15 flashcards summarizing important key concepts. Only include if user requests flashcards.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "Front side of the flashcard: a concise, focused question."
-                    },
-                    "answer": {
-                        "type": "string",
-                        "description": "Back side of the flashcard: a clear and short answer."
-                    },
-                    "key_concepts": {
-                        "type": "string",
-                        "description": "Topic or key concept covered in this flashcard."
-                    },
-                    "key_concepts_data": {
-                        "type": "string",
-                        "description": "Detailed information about the concept to reinforce understanding."
-                    },
-                    "difficulty": {
-                        "type": "string",
-                        "enum": ["Easy", "Medium", "Hard"],
-                        "description": "Difficulty level of the flashcard."
-                    }
-                },
-                "required": ["question", "answer", "difficulty"]
-            }
-        },
-
-        # 10 quiz questions (only when requested)
-        "quiz": {
-            "type": "array",
-            "description": "A set of exactly 10 quiz questions for practice. Only include if user requests quiz.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "The quiz question."
-                    },
-                    "options": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Multiple-choice options for the question (3-5 options)."
-                    },
-                    "correct_answer": {
-                        "type": "string",
-                        "description": "The correct answer from the provided options."
-                    },
-                    "explanation": {
-                        "type": "string",
-                        "description": "Brief explanation for why the correct answer is right."
-                    }
-                },
-                "required": ["question", "options", "correct_answer", "explanation"]
-            }
-        },
-
-        # Match the following section (only when requested)
-        "match_the_following": {
-            "type": "object",
-            "description": "A 'match the following' exercise with two columns (A and B) and correct mappings. Only include if user requests this.",
-            "properties": {
-                "columnA": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of terms, definitions, or entities in column A."
-                },
-                "columnB": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of corresponding matches for items in column A."
-                },
-                "mappings": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "A": {
-                                "type": "string",
-                                "description": "Item from column A."
-                            },
-                            "B": {
-                                "type": "string",
-                                "description": "Correctly matched item from column B."
-                            }
-                        },
-                        "required": ["A", "B"]
-                    },
-                    "description": "Array of correct pairings between column A and column B."
-                }
-            },
-            "required": ["columnA", "columnB", "mappings"]
-        },
-
-        # Summary (always included)
-        "summary": {
-            "type": "string",
-            "description": "Comprehensive, concise summary of all key concepts covered."
-        },
-
-        # Learning objectives (always included)
-        "learning_objectives": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "List of learning objectives for the given topic."
-        }
-    },
-    "required": ["metadata", "content_type", "summary", "learning_objectives"]
-}
-
-
-
-# Helper alias
-SupabaseRow = Dict[str, Any]
-ResultOrError = Union[SupabaseRow, List[SupabaseRow], None]
-
-
-def handle_supabase_response(response: Any) -> ResultOrError:
+def get_embeddings(provider: str, model: str, api_key: str | None = None, **kwargs):
     """
-    Extract data from supabase response or raise error.
+    Return a LangChain Embeddings instance for the given provider and model.
     """
-    if hasattr(response, "error") and response.error is not None:
-        raise RuntimeError(f"Supabase error: {response.error}")
-    return response.data
+    provider_l = (provider or "").lower()
+
+    if provider_l == "google":
+        from pydantic import SecretStr
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        if not api_key:
+            raise ValueError("Google embeddings require an API key")
+        mapped = model if model.startswith("models/") else f"models/{model}"
+        return GoogleGenerativeAIEmbeddings(model=mapped, google_api_key=SecretStr(api_key))
+
+    if provider_l == "openai":
+        try:
+            from langchain.embeddings import OpenAIEmbeddings
+        except Exception:
+            from langchain.embeddings import OpenAIEmbeddings
+        params: Dict[str, Any] = {}
+        if api_key:
+            params["openai_api_key"] = api_key
+        params.update(kwargs)
+        return OpenAIEmbeddings(model=model, **params)
+
+    if provider_l == "cohere":
+        from pydantic import SecretStr
+        from langchain_cohere import CohereEmbeddings
+        key_secret = SecretStr(api_key) if api_key else None
+        return CohereEmbeddings(model=model, cohere_api_key=key_secret, **kwargs)
+
+    if provider_l == "bedrock":
+        from langchain_community.embeddings import BedrockEmbeddings
+        mapped = model if ":" in model else f"{model}:0"
+        region_name = kwargs.pop("region_name", None)
+        return BedrockEmbeddings(model_id=mapped, region_name=region_name, **kwargs)
+
+    if provider_l == "mistral":
+        from pydantic import SecretStr
+        from langchain_mistralai import MistralAIEmbeddings
+        if not api_key:
+            raise ValueError("Mistral embeddings require an API key")
+        key_secret = SecretStr(api_key)
+        return MistralAIEmbeddings(model=model, api_key=key_secret, **kwargs)
+
+    if provider_l == "huggingface":
+        from langchain_huggingface import HuggingFaceEmbeddings
+        model_kwargs = kwargs.pop("model_kwargs", {"trust_remote_code": True})
+        encode_kwargs = kwargs.pop("encode_kwargs", {"normalize_embeddings": True})
+        return HuggingFaceEmbeddings(model_name=model, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs, **kwargs)
+
+    raise ValueError(f"Unsupported provider for embeddings: {provider}")
 
 
-# Pure/fn‐style CRUD operations
-
-async def supabase_select(
-    table: str,
-    filters: Optional[Dict[str, Any]] = None,
-    columns: Union[str, List[str]] = "*",
-    single: bool = False
-) -> ResultOrError:
+async def load_documents_from_files(file_paths: List[str], temp_dir: str) -> List[Document]:
     """
-    Select records from Supabase table with optional filters.
-    If single=True, return maybe_single() or single()
+    Load documents from various file formats with enhanced error handling
     """
-    supabase = get_supabase_client()
-    # Convert columns to string if it's a list
-    columns_str = ",".join(columns) if isinstance(columns, list) else columns
-    query = supabase.table(table).select(columns_str)
-    if filters:
-        for col, val in filters.items():
-            query = query.eq(col, val)
-    if single:
-        query = query.maybe_single()
-    resp = query.execute()
-    return handle_supabase_response(resp)
+    all_documents = []
+
+    async def send_to_llm_for_handwriting(file_path: str) -> List[Document]:
+        """
+        Placeholder: Send the file to LLM for OCR/handwriting recognition if text extraction fails.
+        Replace this with actual LLM OCR logic as needed.
+        """
+        logger.warning(
+            f"Text extraction failed for {file_path}. Sending to LLM for handwriting/OCR analysis.")
+        # Example: create a Document with a note that LLM OCR is needed
+        from langchain_core.documents import Document
+        doc = Document(page_content="", metadata={
+            'source_file': file_path,
+            'file_type': Path(file_path).suffix.lower(),
+            'original_length': 0,
+            'llm_ocr_required': True
+        })
+        # In production, replace this with actual LLM OCR result
+        return [doc]
+
+    for file_path in file_paths:
+        try:
+            file_extension = Path(file_path).suffix.lower()
+            loader = None
+
+            # Choose appropriate loader based on file type
+            if file_extension == '.pdf':
+                loader = PyPDFLoader(file_path)
+            elif file_extension == '.txt':
+                loader = TextLoader(file_path, encoding='utf-8')
+            elif file_extension in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.gif']:
+                loader = UnstructuredImageLoader(file_path)
+            else:
+                loader = UnstructuredFileLoader(file_path)
+
+            # Load documents
+            docs = await asyncio.to_thread(loader.load)
+
+            # Check if all docs are empty (no text extracted)
+            if not any(doc.page_content.strip() for doc in docs):
+                # If no text extracted, send to LLM for OCR/handwriting
+                docs = await send_to_llm_for_handwriting(file_path)
+
+            # Add source metadata
+            for doc in docs:
+                doc.metadata.update({
+                    'source_file': file_path,
+                    'file_type': file_extension,
+                    'original_length': len(doc.page_content)
+                })
+
+            all_documents.extend(docs)
+            logger.info(
+                f"Successfully loaded {len(docs)} documents from {file_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to load {file_path}: {str(e)}")
+            continue
+
+    if not all_documents:
+        raise ValueError(
+            "No documents could be loaded from the provided files")
+
+    return all_documents
 
 
-async def supabase_insert(
-    table: str,
-    record: SupabaseRow,
-    returning: str = "representation"
-) -> ResultOrError:
+async def perform_document_chunking(documents: List[Document]) -> List[Document]:
     """
-    Insert a single record, return inserted row(s).
+    Advanced document chunking with metadata preservation
     """
-    supabase = get_supabase_client()
-    resp = supabase.table(table).insert(record).execute()
-    return handle_supabase_response(resp)
+    # Configure text splitter with optimized parameters
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=DEFAULT_CHUNK_SIZE,
+        chunk_overlap=DEFAULT_CHUNK_OVERLAP,
+        length_function=len,
+        separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
+        keep_separator=True
+    )
+
+    # Split documents into chunks
+    chunks = text_splitter.split_documents(documents)
+
+    # Enhance chunk metadata
+    for idx, chunk in enumerate(chunks):
+        chunk.metadata.update({
+            'chunk_id': idx,
+            'chunk_size': len(chunk.page_content),
+            'chunk_index': idx,
+            'total_chunks': len(chunks)
+        })
+
+    logger.info(
+        f"Created {len(chunks)} chunks from {len(documents)} documents")
+    return chunks
 
 
-async def supabase_update(
-    table: str,
-    updates: SupabaseRow,
-    filters: Dict[str, Any]
-) -> ResultOrError:
+async def setup_vector_store_and_retriever(chunks: List[Document], embedding_provider: str, embedding_model: str, embedding_api_key: str | None) -> Tuple[FAISS, EnsembleRetriever]:
     """
-    Update records matching filters, return updated rows.
+    Setup vector store using FAISS and create hybrid retriever.
+    embedding_provider/model/key are chosen from per-user model preferences.
     """
-    if not filters:
-        raise ValueError("Update requires filters to prevent full‐table update")
-    supabase = get_supabase_client()
-    query = supabase.table(table).update(updates)
-    for col, val in filters.items():
-        query = query.eq(col, val)
-    resp = query.execute()
-    return handle_supabase_response(resp)
+    if not embedding_provider or not embedding_model:
+        raise ValueError("Embedding provider and model must be provided")
 
+    key = embedding_api_key.strip() if embedding_api_key else None
+    if not key:
+        logger.debug("No explicit embedding API key provided; factory may still initialize embeddings if supported by env")
 
-async def supabase_upsert(
-    table: str,
-    record: SupabaseRow,
-    on_conflict: Optional[Union[str, List[str]]] = None,
-    returning: str = "representation"
-) -> ResultOrError:
-    """
-    Upsert record (insert or update if conflict).
-    """
-    kwargs = {}
-    if on_conflict is not None:
-        kwargs["on_conflict"] = on_conflict
-    supabase = get_supabase_client()
-    resp = supabase.table(table).upsert(record, **kwargs).execute()
-    return handle_supabase_response(resp)
-
-
-async def supabase_delete(
-    table: str,
-    filters: Dict[str, Any]
-) -> ResultOrError:
-    """
-    Delete records matching filters.
-    """
-    if not filters:
-        raise ValueError("Delete requires filters to prevent full‐table deletion")
-    supabase = get_supabase_client()
-    query = supabase.table(table).delete()
-    for col, val in filters.items():
-        query = query.eq(col, val)
-    resp = query.execute()
-    return handle_supabase_response(resp)
-
-
-# Unified provider response wrapper
-
-def format_learning_content_response(
-    content: Dict[str, Any],
-    schema: Type[BaseModel]
-) -> Dict[str, Any]:
-    """
-    Validate content against LEARNING_CONTENT_SCHEMA, return a standard format, or raise error.
-    Always returns a dict with:
-      - status: "success" or "error"
-      - data: validated content if success, else None
-      - errors: validation errors if any
-    """
+    # Create embeddings via factory
     try:
-        validated = schema.parse_obj(content)
-        return {
-            "status": "success",
-            "data": validated.dict(),
-            "errors": None
-        }
-    except ValidationError as ve:
-        logger.error(f"Validation error formatting content: {ve}")
-        return {
-            "status": "error",
-            "data": None,
-            "errors": ve.errors()
-        }
+        embeddings = get_embeddings(embedding_provider, embedding_model, key)
+        logger.info("Initialized embeddings for provider=%s model=%s", embedding_provider, embedding_model)
+    except Exception as e:
+        logger.error("Failed to initialize embeddings for provider=%s model=%s: %s", embedding_provider, embedding_model, e)
+        raise ValueError(f"Failed to initialize embeddings: {e}")
 
-# Structured generation function (slightly refactored for purity)
+    # Create FAISS vector store
+    try:
+        vector_store = FAISS.from_documents(chunks, embeddings)
+        logger.info("Stored %d chunks in FAISS vector store", len(chunks))
+    except Exception as e:
+        logger.error("Failed to create vector store: %s", e)
+        raise ValueError(f"Failed to create embeddings - check your API key or model: {e}")
 
-# Embeddings function
-def create_structured_prompt(context: str, query: str, content_type: str, schema: Type[BaseModel]) -> str:
-    """Create a structured prompt for content generation."""
-    
+    vector_retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": DEFAULT_TOP_K})
+
+    bm25_retriever = BM25Retriever.from_documents(chunks)
+    bm25_retriever.k = DEFAULT_TOP_K
+
+    ensemble_retriever = EnsembleRetriever(retrievers=[vector_retriever, bm25_retriever], weights=[DEFAULT_ALPHA, 1.0 - DEFAULT_ALPHA])
+
+    logger.info("Successfully configured hybrid retrieval system")
+    return vector_store, ensemble_retriever
+
+
+async def enhance_retrieved_context(retrieved_docs: List[Document], all_chunks: List[Document]) -> List[Document]:
+    """
+    Enhance retrieved documents with surrounding context chunks
+    """
+    enhanced_docs = list(retrieved_docs)  # Start with retrieved docs
+    retrieved_chunk_ids = {doc.metadata.get(
+        'chunk_id', -1) for doc in retrieved_docs}
+
+    # Add neighboring chunks for better context
+    for doc in retrieved_docs:
+        chunk_id = doc.metadata.get('chunk_id', -1)
+        if chunk_id == -1:
+            continue
+
+        # Look for adjacent chunks
+        for offset in [-2, -1, 1, 2]:
+            neighbor_id = chunk_id + offset
+            if neighbor_id in retrieved_chunk_ids:
+                continue
+
+            # Find and add neighbor chunk
+            for chunk in all_chunks:
+                if chunk.metadata.get('chunk_id') == neighbor_id:
+                    enhanced_docs.append(chunk)
+                    retrieved_chunk_ids.add(neighbor_id)
+                    break
+
+    # Sort by chunk_id to maintain order
+    enhanced_docs.sort(key=lambda x: x.metadata.get('chunk_id', 0))
+    logger.info(
+        f"Enhanced context from {len(retrieved_docs)} to {len(enhanced_docs)} chunks")
+    return enhanced_docs
+
+
+def format_context_for_llm(documents: List[Document]) -> str:
+    """
+    Format retrieved documents into a structured context string
+    """
+    context_parts = []
+
+    for idx, doc in enumerate(documents, 1):
+        source = doc.metadata.get('source_file', 'Unknown')
+        content = doc.page_content.strip()
+
+        formatted_section = f"""
+=== Document Section {idx} ===
+Source: {source}
+Content: {content}
+"""
+        context_parts.append(formatted_section)
+
+    return "\n".join(context_parts)
+
+logger = logging.getLogger(__name__)
+
+# ----- Pure helpers -----
+
+def detect_content_type(query: str, content_type: str) -> str:
+    q = (query or "").lower().strip()
+    if content_type != "all":
+        return content_type or "all"
+
+    has_flashcards = "flashcard" in q
+    has_quiz = "quiz" in q
+    has_match = "match" in q or "matching" in q
+    has_summary = "summary" in q
+
+    count = sum([has_flashcards, has_quiz, has_match])
+    if count > 1:
+        return "all"
+    if has_flashcards:
+        return "flashcards"
+    if has_quiz:
+        return "quiz"
+    if has_match:
+        return "match_the_following"
+    if has_summary:
+        return "summary"
+    return "all"
+
+
+def instructions_for(ct: str) -> str:
+    return {
+        "flashcards": """
+Generate exactly 15 flashcards covering the key concepts from the content.
+Each flashcard should have a question, answer, and difficulty level.
+""",
+        "quiz": """
+Generate exactly 10 quiz questions with multiple choice options.
+Each question should have 3-5 options, correct answer, and explanation.
+""",
+        "match_the_following": """
+Create a match-the-following exercise with two columns (A and B) and correct mappings.
+Include at least 5-8 items in each column with their correct pairings.
+""",
+        "summary": """
+Provide a comprehensive summary of all key concepts covered.
+Focus on the main ideas and important details.
+""",
+        "all": """
+Generate comprehensive study materials including ALL of the following sections:
+1. Exactly 15 flashcards covering key concepts (REQUIRED - must be present)
+2. Exactly 10 quiz questions with multiple choice options (REQUIRED - must be present)
+3. A match-the-following exercise with 2 columns and correct mappings (REQUIRED - must be present)
+4. A comprehensive summary (REQUIRED - must be present)
+5. Learning objectives (REQUIRED - must be present)
+
+CRITICAL: You MUST include the "match_the_following" field in your JSON response with:
+- "columnA": array of items (at least 5-8 items)
+- "columnB": array of corresponding matches
+- "mappings": array of correct A-B pairings
+
+Do not skip the match_the_following section - it is mandatory when content_type is "all".
+""",
+    }.get(ct, "")
+
+
+def build_prompt(context: str, query: str, ct: str, content_instructions: str) -> str:
     return f"""
-You are an expert educational content creator. Based on the provided context and query, generate structured learning content.
+Based on the following educational content and user query, generate study materials as requested.
 
-Context:
+CONTENT:
 {context}
 
-User Query: {query}
+USER QUERY:
+{query}
 
-Content Type Requested: {content_type}
+CONTENT TYPE REQUESTED: {ct}
 
-Make sure to:
-1. Extract appropriate metadata (subject, chapter, concept names) from the content
-2. Create educational content suitable for the requested type ({content_type})
-3. Ensure difficulty level is appropriate based on content complexity
-4. Provide clear, accurate educational content
-5. Include comprehensive summaries and learning objectives
+Please extract the following information and generate study materials:
+1. Automatically identify the subject, chapter, and concept from the content
+2. Set the content_type field to: "{ct}"
+3. {content_instructions}
+4. Always provide a comprehensive summary and learning objectives
+5. Determine appropriate difficulty level
 
-Focus on creating high-quality educational content that helps students learn effectively.
-"""
+IMPORTANT SCHEMA REQUIREMENTS:
+- Your response MUST be valid JSON that strictly follows the provided schema
+- When content_type is "all", you MUST include ALL required fields: metadata, content_type, flashcards, quiz, match_the_following, summary, learning_objectives
+- Do NOT omit the match_the_following field when content_type is "all"
+- The match_the_following field must contain: columnA (array), columnB (array), mappings (array)
 
+Focus on creating high-quality educational content that helps with active learning and retention.
 
-async def google_gemini_generate(
-    prompt: str,
-    api_key: str,
-    model_name: str = "gemini-2.0-flash",
-    response_mime_type: str = "application/json"
-) -> Dict[str, Any]:
-    """Generate content using Google Gemini API."""
-    genai.configure(api_key=api_key)  # type: ignore
-    
-    model = genai.GenerativeModel(model_name)  # type: ignore
-    
-    response = model.generate_content(
-        prompt,
-        generation_config=GenerationConfig(
-            response_mime_type=response_mime_type
-        )
-    )
-    
-    return {
-        "content": response.text,
-        "usage": {
-            "prompt_tokens": response.usage_metadata.prompt_token_count if response.usage_metadata else 0,
-            "completion_tokens": response.usage_metadata.candidates_token_count if response.usage_metadata else 0,
-            "total_tokens": response.usage_metadata.total_token_count if response.usage_metadata else 0
-        }
-    }
+Return the response as JSON conforming to the LearningContent Pydantic model.
+""".strip()
 
 
-def get_embeddings_provider(provider_name: str, api_key: str):
-    """Get embeddings function for specified provider."""
-    config = PROVIDER_CONFIGS.get(provider_name)
-    if not config or not config["embedding_handler"]:
-        raise ValueError(f"Embeddings not supported for {provider_name}")
-    
-    return config["embedding_handler"](api_key)
-
-
-
-# LLM Provider functions
-def create_llm_agent(provider_name: str, api_key: str, model_name: Optional[str] = None) -> Agent:
-    """Create an LLM agent for the specified provider."""
-    config = PROVIDER_CONFIGS.get(provider_name)
-    if not config:
-        raise ValueError(f"Unsupported provider: {provider_name}")
-    
-    model = config["model_factory"](api_key, model_name)
-    
-    # Create agent with the model
-    agent = Agent(model=model)
-    return agent
-   
+# ----- Main function -----
 
 async def generate_structured_response(
     context: str,
     query: str,
-    user_id: str,
-    schema: Type[BaseModel],
-    provider_name: str = DEFAULT_PROVIDER,
-    model_name: Optional[str] = None,
-    content_type: str = "all"
-) -> Dict[str, Any]:
+    provider: str,
+    model_name: str,
+    api_key: str,
+    content_type: str = "all",
+):
     """
-    Given context, query etc., generate content that fits the schema,
-    then format it into a uniform response.
+    Generate structured learning content using a PydanticAI Agent with output_type=LearningContent.
     """
-    api_key = await get_user_api_key(user_id, provider_name)
-    if not api_key:
-        return {"status": "error", "error": f"No API key found for {provider_name}", "error_type": "missing_api_key"}
+    if not api_key or not api_key.strip():
+        raise ValueError("API key is required for the provider agent.")
 
-    prompt = create_structured_prompt(context, query, content_type, schema)
-    raw_resp: Dict[str, Any]
-    if provider_name in ("openai", "anthropic"):
-        agent = create_llm_agent(provider_name, api_key, model_name)
-        # Use PydanticAI properly with output_type
-        agent = Agent(model=agent.model, output_type=schema)
-        result = await agent.run(prompt)
-        raw_resp = result.output.model_dump()
-    elif provider_name == "google":
-        resp = await google_gemini_generate(
-            prompt,
-            api_key,
-            model_name or DEFAULT_MODEL,
-            response_mime_type="application/json"
-        )
-        raw_resp = json.loads(resp["content"])
-    else:
-        return {"status": "error", "error": f"Unsupported provider {provider_name}", "error_type": "unsupported_provider"}
+    from app.llm.providers import create_learning_agent
+    # Decide content type and build prompt (pure functions)
+    final_ct = detect_content_type(query, content_type)
+    prompt = build_prompt(context, query, final_ct, instructions_for(final_ct))
 
-    return format_learning_content_response(raw_resp, schema)
+    logger.info("Creating learning agent for provider=%s model=%s", provider, model_name)
+
+    try:
+        agent = await create_learning_agent(provider, model_name, api_key)
+    except Exception as e:
+        logger.error("Failed to create learning agent: %s", e)
+        raise ValueError(f"Failed to initialize model/provider: {e}")
+
+    # Correct PydanticAI call — no invoke/ainvoke
+    logger.info(f"model_prompt{prompt}")
+    # Non-streaming invocation: use the async context manager and read final output
+    async with agent.run_stream(prompt, output_type=StructuredDict(LEARNING_CONTENT_SCHEMA)) as res:
+        llm_response = getattr(res, 'output', None)
+        # If output is not present, try to collect streamed output into one dict
+        if llm_response is None:
+            collected = None
+            try:
+                # Attempt to consume stream_output to get final assembled result
+                async for partial in res.stream_output(debounce_by=0.01):
+                    collected = partial
+                llm_response = collected
+            except Exception:
+                llm_response = None
+    with open("./../../llm_response.exampl", "a") as f:
+        f.write(str(llm_response) + "\n")
+
+    logger.info(f"llm_response{llm_response}")
+
+    # Return JSON-compatible dict regardless of pydantic version
+    return llm_response
 
 
-# Non‐pure pieces (IO, orchestrator)
-
-async def get_llm_response(
-    uploaded_files_paths: List[str],
-    userprompt: str,
-    temp_dir: str,
-    user_id: str,
-    provider_name: str = DEFAULT_PROVIDER,
-    model_name: Optional[str] = None
-) -> Dict[str, Any]:
+async def generate_structured_response_stream(
+    context: str,
+    query: str,
+    provider: str,
+    model_name: str,
+    api_key: str,
+    content_type: str = "all",
+):
     """
-    Orchestration: document loading → context → generation.
+    Async generator that yields partial, validated structured outputs from Pydantic-AI as they stream.
+    Each yielded item is a Python object (dict/TypedDict) representing the partial validated data.
     """
-    # 1. Get API key
-    api_key = await get_user_api_key(user_id, provider_name)
-    if not api_key:
-        return {"status": "error", "error": f"API key is required for {provider_name}", "error_type": "missing_api_key"}
+    if not api_key or not api_key.strip():
+        raise ValueError("API key is required for the provider.")
 
-    # 2. Load and process documents
-    documents = await load_documents_from_files(uploaded_files_paths, temp_dir)
+    from app.llm.providers import create_learning_agent
+
+    final_ct = detect_content_type(query, content_type)
+    prompt = build_prompt(context, query, final_ct, instructions_for(final_ct))
+
+    try:
+        agent = await create_learning_agent(provider, model_name, api_key)
+    except Exception as e:
+        logger.error("Failed to create learning agent for streaming: %s", e)
+        raise ValueError(f"Failed to initialize model/provider for streaming: {e}")
+
+    logger.info("Starting streaming structured response")
+    # Use the agent as an async context manager to stream partial validated output
+    async with agent.run_stream(prompt, output_type=StructuredDict(LEARNING_CONTENT_SCHEMA)) as result:
+        # `result.stream_output()` yields partial validated chunks (typed)
+        async for partial in result.stream_output(debounce_by=0.01):
+            # Each `partial` is already a validated Python object (TypedDict or Pydantic model)
+            try:
+                yield partial
+            except Exception:
+                # If serialization/processing fails for a partial, continue streaming
+                logger.exception("Failed to yield partial output, skipping chunk")
+
+
+async def get_llm_response_stream(uploaded_files_paths: List[Path], userprompt: str, temp_dir: str, user_api_key: str, user_id: str, provider_name: str, model_name: str):
+    """
+    Streamed variant of get_llm_response that yields partial structured outputs as they are produced.
+    This mirrors the synchronous pipeline but returns an async generator of partial outputs.
+    """
+    if not user_api_key:
+        raise ValueError("API key is required. Please add your Gemini API key in settings to continue.")
+
+    # Reuse same pipeline: load docs, chunk, setup retriever, retrieve, enhance, format
+    documents = await load_documents_from_files([str(p) for p in uploaded_files_paths], temp_dir)
     chunks = await perform_document_chunking(documents)
 
-    # 3. Setup embeddings and vector store  
-    # Use the API key directly - the setup function will create embeddings internally
-    embedding_api_key = api_key
-    if provider_name not in ["google"]:
-        # For non-Google providers, try to get a Google key for embeddings
-        google_key = await get_user_api_key(user_id, "google")
-        if google_key:
-            embedding_api_key = google_key
-        else:
-            return {"status": "error", "error": "Google API key required for embeddings", "error_type": "missing_embeddings_provider"}
+    from app.llm.providers import get_user_model_preferences
+    from app.services.api_key_service import get_api_key_for_provider
 
-    vector_store, hybrid_retriever = await setup_vector_store_and_retriever(chunks, embedding_api_key)
+    embedding_provider = provider_name
+    embedding_model = model_name
+    try:
+        prefs = get_user_model_preferences(user_id)
+        emb_pref = None
+        for p in prefs:
+            if p and p.get("use_for_embedding"):
+                emb_pref = p
+                break
+        if emb_pref:
+            mid = emb_pref.get("model_id")
+            prov = emb_pref.get("provider_name") or None
+            if mid and "-" in mid:
+                parts = mid.split("-", 1)
+                embedding_provider = prov or parts[0]
+                embedding_model = parts[1]
+            else:
+                embedding_provider = prov or embedding_provider
+                embedding_model = mid or embedding_model
+    except Exception:
+        logger.debug("Failed to read embedding preferences; falling back to chat model")
 
-    # 4. Retrieve & prepare context
+    try:
+        embedding_api_key = await get_api_key_for_provider(user_id, embedding_provider)
+    except Exception:
+        embedding_api_key = None
+
+    vector_store, hybrid_retriever = await setup_vector_store_and_retriever(chunks, embedding_provider, embedding_model, embedding_api_key)
     retrieved_docs = await hybrid_retriever.ainvoke(userprompt)
-    enhanced_docs = enhance_retrieved_context(retrieved_docs, chunks)
+    enhanced_docs = await enhance_retrieved_context(retrieved_docs, chunks)
     formatted_context = format_context_for_llm(enhanced_docs)
 
-    # 5. Detect content type
-    content_type = detect_content_type(userprompt)
-
-    # 6. Generate structured response
-    resp = await generate_structured_response(
-        context=formatted_context,
-        query=userprompt,
-        user_id=user_id,
-        schema=LearningContent,
-        provider_name=provider_name,
-        model_name=model_name,
-        content_type=content_type
-    )
-
-    return resp
+    # Now call the streaming generator and yield partials
+    async for partial in generate_structured_response_stream(formatted_context, userprompt, provider_name, model_name, user_api_key):
+        yield partial
 
 
-# Utility: get_user_api_key with pure signature
-# Pure functions for database operations
-async def get_user_api_key(user_id: str, provider_name: str) -> Optional[str]:
-    """Get user's API key for a specific provider from Supabase."""
+async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, temp_dir: str, user_api_key: str, user_id: str, provider_name: str, model_name: str) -> Dict[str, Any]:
+    """
+    Complete RAG pipeline for generating structured learning content
+    """
     try:
-        supabase = get_supabase_client()
-        response = supabase.table('user_api_keys') \
-            .select('encrypted_api_key') \
-            .eq('student_id', user_id) \
-            .eq('provider_id', provider_name) \
-            .eq('is_active', True) \
-            .maybe_single() \
-            .execute()
-        
-        if response and hasattr(response, 'data') and response.data:
-            return response.data.get('encrypted_api_key')
-        return None
-    except Exception as e:
-        logger.error(f"Error fetching API key for {provider_name}: {e}")
-        return None
-# Helper functions
-def detect_content_type(query: str) -> str:
-    """Detect content type from query."""
-    query_lower = query.lower()
-    content_types = {
-        "flashcards": "flashcard" in query_lower,
-        "quiz": "quiz" in query_lower,
-        "match_the_following": any(x in query_lower for x in ["match", "matching"]),
-        "summary": "summary" in query_lower
-    }
-    
-    # Count true values
-    true_count = sum(content_types.values())
-    
-    if true_count > 1:
-        return "all"
-    elif true_count == 1:
-        return next(key for key, value in content_types.items() if value)
-    else:
-        return "all"
+        # Validate that user has provided API key
+        if not user_api_key:
+            return {
+                "status": "error",
+                "error": "API key is required. Please add your Gemini API key in settings to continue.",
+                "error_type": "missing_api_key"
+            }
 
-# API endpoints (FastAPI routers would use these functions)
-async def add_api_key(user_id: str, provider_name: str, api_key: str, is_default: bool = False) -> bool:
-    """Add API key for user."""
-    try:
-        supabase = get_supabase_client()
-        response = supabase.table('user_api_keys').insert({
-            'student_id': user_id,
-            'provider_id': provider_name,
-            'encrypted_api_key': api_key,  # Note: encrypt in production
-            'is_default': is_default,
-            'is_active': True
-        }).execute()
-        
-        return bool(response.data)
-    except Exception as e:
-        logger.error(f"Error adding API key: {e}")
-        return False
+        logger.info("Starting enhanced RAG pipeline...")
 
-async def get_user_providers(user_id: str) -> List[Dict[str, Any]]:
-    """Get all providers with API keys for user."""
-    try:
-        supabase = get_supabase_client()
-        response = supabase.table('user_api_keys') \
-            .select('provider_id, is_default') \
-            .eq('student_id', user_id) \
-            .eq('is_active', True) \
-            .execute()
-        
-        return response.data if response.data else []
-    except Exception as e:
-        logger.error(f"Error fetching user providers: {e}")
-        return []
+        # Step 1: Load documents from files
+        logger.info("Loading documents from uploaded files...")
+        documents = await load_documents_from_files([str(p) for p in uploaded_files_paths], temp_dir)
 
+        # Step 2: Chunk documents for processing
+        logger.info("Chunking documents for optimal processing...")
+        chunks = await perform_document_chunking(documents)
+
+        # Step 3: Determine embedding preference (per-user) and setup vector store
+        logger.info("Determining embedding model preference for user and configuring retrieval...")
+        from app.llm.providers import get_user_model_preferences
+        from app.services.api_key_service import get_api_key_for_provider
+
+        embedding_provider = provider_name
+        embedding_model = model_name
+        # Try to find an explicit embedding preference
+        try:
+            prefs = get_user_model_preferences(user_id)
+            emb_pref = None
+            for p in prefs:
+                if p and p.get("use_for_embedding"):
+                    emb_pref = p
+                    break
+            if emb_pref:
+                mid = emb_pref.get("model_id")
+                prov = emb_pref.get("provider_name") or None
+                if mid and "-" in mid:
+                    parts = mid.split("-", 1)
+                    embedding_provider = prov or parts[0]
+                    embedding_model = parts[1]
+                else:
+                    # fallback to provided provider_name if available
+                    embedding_provider = prov or embedding_provider
+                    embedding_model = mid or embedding_model
+        except Exception:
+            logger.debug("Failed to read embedding preferences; falling back to chat model")
+
+        # Fetch embedding API key for the embedding provider (may be None)
+        try:
+            embedding_api_key = await get_api_key_for_provider(user_id, embedding_provider)
+        except Exception:
+            embedding_api_key = None
+
+        logger.info("Using embedding provider=%s model=%s (key present=%s)", embedding_provider, embedding_model, bool(embedding_api_key))
+        vector_store, hybrid_retriever = await setup_vector_store_and_retriever(chunks, embedding_provider, embedding_model, embedding_api_key)
+
+        # Step 4: Retrieve relevant content using hybrid search
+        logger.info(f"Retrieving relevant content for query: '{userprompt}'")
+        retrieved_docs = await hybrid_retriever.ainvoke(userprompt)
+
+        # Step 5: Enhance with surrounding context
+        enhanced_docs = await enhance_retrieved_context(retrieved_docs, chunks)
+
+        # Step 6: Format context for LLM processing
+        formatted_context = format_context_for_llm(enhanced_docs)
+
+        # Step 7: Generate structured response with user's API key
+        logger.info("Generating structured learning content...")
+
+        # Auto-detect content type from user prompt
+        content_type = "all"  # default
+        userprompt_lower = userprompt.lower()
+
+        # Check for multiple content types
+        has_flashcards = "flashcard" in userprompt_lower
+        has_quiz = "quiz" in userprompt_lower
+        has_match = "match" in userprompt_lower or "matching" in userprompt_lower
+        has_summary = "summary" in userprompt_lower
+
+        # If multiple content types are requested, use "all"
+        content_types_count = sum([has_flashcards, has_quiz, has_match])
+
+        if content_types_count > 1:
+            content_type = "all"
+        elif has_flashcards:
+            content_type = "flashcards"
+        elif has_quiz:
+            content_type = "quiz"
+        elif has_match:
+            content_type = "match_the_following"
+        elif has_summary:
+            content_type = "summary"
+
+        logger.info(
+            f"Detected content type: {content_type} (flashcards:{has_flashcards}, quiz:{has_quiz}, match:{has_match})")
+        logger.info(f"User prompt was: '{userprompt}'")
+        logger.info(f"Content types count: {content_types_count}")
+        response = await generate_structured_response(formatted_context, userprompt, provider_name, model_name, user_api_key, content_type)
+        # Ensure we always return a dict
+        return response if isinstance(response, dict) else (response or {})
+    except ValueError as ve:
+        logger.error("Validation error in get_llm_response: %s", ve)
+        return {
+            "status": "error",
+            "error": str(ve),
+            "error_type": "validation_error"
+        }
+    except Exception as e:
+        logger.exception("Error in get_llm_response: %s", e)
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": "processing_error"
+        }

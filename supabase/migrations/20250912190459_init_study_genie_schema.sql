@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS students (
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
     full_name VARCHAR(100) NOT NULL,
+    grade_level VARCHAR(100) NOT NULL,
+    bio      VARCHAR(100) NOT NULL,
     learning_preferences JSONB DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -13,88 +15,61 @@ CREATE TABLE IF NOT EXISTS students (
 
 -- Subjects table - created dynamically when students upload content and LLM analyzes it
 CREATE TABLE IF NOT EXISTS subjects (
+    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
     subject_id BIGSERIAL PRIMARY KEY,
-    subject_name VARCHAR(200) NOT NULL UNIQUE,
-    description TEXT,
-    difficulty_level VARCHAR(20) DEFAULT 'Medium',
-    created_from_content BOOLEAN DEFAULT TRUE, -- indicates this was created from uploaded content
-    llm_generated BOOLEAN DEFAULT TRUE, -- indicates this was suggested by LLM
-    content_source TEXT, -- reference to the original content that created this subject
+    llm_suggested_subject_name VARCHAR(200) NOT NULL UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS student_enrollments (
-    enrollment_id BIGSERIAL PRIMARY KEY,
     student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
-    subject_id BIGINT REFERENCES subjects(subject_id) ON DELETE CASCADE,
     enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_active BOOLEAN DEFAULT TRUE,
-    UNIQUE(student_id, subject_id)
+    UNIQUE(student_id)
 );
 
 -- Chapters table - created dynamically from LLM content analysis
 CREATE TABLE IF NOT EXISTS chapters (
+    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
     chapter_id BIGSERIAL PRIMARY KEY,
     subject_id BIGINT REFERENCES subjects(subject_id) ON DELETE CASCADE,
-    chapter_name VARCHAR(200) NOT NULL,
+    llm_suggested_chapter_name VARCHAR(200) NOT NULL,
     chapter_order BIGINT NOT NULL,
     description TEXT,
-    llm_generated BOOLEAN DEFAULT TRUE, -- indicates this was suggested by LLM from content
-    content_source TEXT, -- reference to the original content that created this chapter
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(subject_id, chapter_name),
-    UNIQUE(subject_id, chapter_order)
+    UNIQUE(subject_id, llm_suggested_chapter_name),
+    UNIQUE(subject_id, chapter_order),
+    UNIQUE(student_id)
 );
 
 -- Concepts table - created dynamically from LLM content analysis
 CREATE TABLE IF NOT EXISTS concepts (
+    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
+
     concept_id BIGSERIAL PRIMARY KEY,
     chapter_id BIGINT REFERENCES chapters(chapter_id) ON DELETE CASCADE,
-    concept_name VARCHAR(200) NOT NULL,
+    llm_suggested_concept_name VARCHAR(200) NOT NULL,
     concept_order INTEGER NOT NULL,
     description TEXT,
     difficulty_level VARCHAR(20) DEFAULT 'Medium',
-    llm_generated BOOLEAN DEFAULT TRUE, -- indicates this was suggested by LLM from content
-    content_source TEXT, -- reference to the original content that created this concept
-    learning_objectives TEXT[], -- specific learning objectives for this concept
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(chapter_id, concept_name),
-    UNIQUE(chapter_id, concept_order)
+    UNIQUE(chapter_id, llm_suggested_concept_name),
+    UNIQUE(chapter_id, concept_order),
+    UNIQUE(student_id)
 );
 
 -- Uploaded Content table - tracks student uploads and LLM analysis
-CREATE TABLE IF NOT EXISTS uploaded_content (
+CREATE TABLE IF NOT EXISTS learning_history (
     content_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
     original_filename VARCHAR(500) NOT NULL,
-    file_type VARCHAR(50) NOT NULL, -- 'pdf', 'image', 'text', 'docx', etc.
-    file_size_bytes BIGINT,
-    file_path TEXT, -- where the file is stored
-    content_text TEXT, -- extracted text content
-    llm_analysis JSONB, -- structured analysis from LLM (subjects, chapters, concepts)
-    processing_status VARCHAR(50) DEFAULT 'pending', -- 'pending', 'processing', 'completed', 'failed'
-    processing_error TEXT, -- error message if processing failed
-    subjects_created INTEGER DEFAULT 0, -- count of subjects created from this content
-    chapters_created INTEGER DEFAULT 0, -- count of chapters created from this content
-    concepts_created INTEGER DEFAULT 0, -- count of concepts created from this content
-    uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    processed_at TIMESTAMP WITH TIME ZONE,
+    student_prompt TEXT,
+    llm_response JSONB, -- structured analysis from LLM (subjects, chapters, concepts)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Content Learning Mapping - tracks which content created which learning structure
-CREATE TABLE IF NOT EXISTS content_learning_mapping (
-    mapping_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    content_id UUID REFERENCES uploaded_content(content_id) ON DELETE CASCADE,
-    subject_id BIGINT REFERENCES subjects(subject_id) ON DELETE CASCADE,
-    chapter_id BIGINT REFERENCES chapters(chapter_id) ON DELETE CASCADE,
-    concept_id BIGINT REFERENCES concepts(concept_id) ON DELETE CASCADE,
-    confidence_score DECIMAL(5,2) DEFAULT 0.0, -- LLM confidence in this mapping
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 
@@ -198,93 +173,73 @@ CREATE TABLE IF NOT EXISTS student_recommendations (
     is_dismissed BOOLEAN DEFAULT FALSE
 );
 
--- Providers table
-CREATE TABLE IF NOT EXISTS llm_providers (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    name VARCHAR(100) NOT NULL UNIQUE,  -- e.g., 'google', 'openai', 'anthropic'
-    display_name VARCHAR(100) NOT NULL,  -- e.g., 'Google Gemini', 'OpenAI GPT', 'Anthropic Claude'
-    base_url VARCHAR(255),              -- For custom providers
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
--- Available models table
-CREATE TABLE IF NOT EXISTS available_models (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    provider_id UUID REFERENCES llm_providers(id) ON DELETE CASCADE,
-    model_name VARCHAR(100) NOT NULL,
-    display_name VARCHAR(200) NOT NULL,
-    model_type VARCHAR(50) NOT NULL,  -- 'chat', 'completion', 'embeddings'
-    context_length INTEGER,
-    supports_system_prompt BOOLEAN DEFAULT TRUE,
-    supports_function_calling BOOLEAN DEFAULT FALSE,
-    max_tokens INTEGER,
-    is_active BOOLEAN DEFAULT TRUE,
-    features JSONB DEFAULT '{}',  -- Store model capabilities
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(provider_id, model_name)
-);
-
 -- User API Keys table 
+
 CREATE TABLE IF NOT EXISTS user_api_keys (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    student_id VARCHAR(100) NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
-    provider_id UUID REFERENCES llm_providers(id) ON DELETE CASCADE,
+    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
+    provider_id VARCHAR(100), -- optional provider identifier; we rely on PROVIDERS_JSON in-app
+    provider_name VARCHAR(200) NOT NULL,
+    key_name VARCHAR(200) DEFAULT NULL,
     encrypted_api_key TEXT NOT NULL,
     is_active BOOLEAN DEFAULT TRUE,
     is_default BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(student_id, provider_id)
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_user_api_keys_student ON user_api_keys(student_id);
+CREATE INDEX IF NOT EXISTS idx_user_api_keys_provider ON user_api_keys(provider_name);
+
+-- Row Level Security: ensure users only access their own keys
+ALTER TABLE user_api_keys ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can select their own API keys" ON user_api_keys
+    FOR SELECT USING (auth.jwt() ->> 'sub' = student_id);
+
+CREATE POLICY "Users can insert their own API keys" ON user_api_keys
+    FOR INSERT WITH CHECK (auth.jwt() ->> 'sub' = student_id);
+
+CREATE POLICY "Users can update their own API keys" ON user_api_keys
+    FOR UPDATE USING (auth.jwt() ->> 'sub' = student_id) WITH CHECK (auth.jwt() ->> 'sub' = student_id);
+
+CREATE POLICY "Users can delete their own API keys" ON user_api_keys
+    FOR DELETE USING (auth.jwt() ->> 'sub' = student_id);
+
+
 -- User Model Preferences table
-CREATE TABLE IF NOT EXISTS user_model_preferences (
+
+CREATE TABLE IF NOT EXISTS model_preferences (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    student_id VARCHAR(100) NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
-    model_id UUID REFERENCES available_models(id) ON DELETE CASCADE,
+    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
+    model_id VARCHAR(300) NOT NULL,
+    provider_name VARCHAR(200) DEFAULT NULL,
     use_for_chat BOOLEAN DEFAULT FALSE,
     use_for_embedding BOOLEAN DEFAULT FALSE,
     is_default BOOLEAN DEFAULT FALSE,
+    metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(student_id, model_id)
 );
 
--- Insert default providers
-INSERT INTO llm_providers (name, display_name, is_active) VALUES 
-    ('google', 'Google Gemini', true),
-    ('openai', 'OpenAI', true),
-    ('anthropic', 'Anthropic Claude', true)
-ON CONFLICT (name) DO NOTHING;
+CREATE INDEX IF NOT EXISTS idx_model_prefs_student ON model_preferences(student_id);
 
--- Insert default models
-INSERT INTO available_models (provider_id, model_name, display_name, model_type, context_length, supports_function_calling, max_tokens) 
-SELECT 
-    p.id,
-    model_data.model_name,
-    model_data.display_name,
-    model_data.model_type,
-    model_data.context_length,
-    model_data.supports_function_calling,
-    model_data.max_tokens
-FROM llm_providers p
-CROSS JOIN (VALUES
-    -- Google models
-    ('google', 'gemini-2.0-flash', 'Gemini 2.0 Flash', 'chat', 1000000, true, 8192),
-    ('google', 'gemini-1.5-pro', 'Gemini 1.5 Pro', 'chat', 2000000, true, 8192),
-    ('google', 'text-embedding-004', 'Text Embedding 004', 'embeddings', 2048, false, 768),
-    -- OpenAI models
-    ('openai', 'gpt-4o', 'GPT-4o', 'chat', 128000, true, 4096),
-    ('openai', 'gpt-4o-mini', 'GPT-4o Mini', 'chat', 128000, true, 16384),
-    ('openai', 'text-embedding-3-small', 'Text Embedding 3 Small', 'embeddings', 8191, false, 1536),
-    ('openai', 'text-embedding-3-large', 'Text Embedding 3 Large', 'embeddings', 8191, false, 3072),
-    -- Anthropic models
-    ('anthropic', 'claude-3-5-sonnet-20241022', 'Claude 3.5 Sonnet', 'chat', 200000, true, 8192),
-    ('anthropic', 'claude-3-5-haiku-20241022', 'Claude 3.5 Haiku', 'chat', 200000, true, 8192)
-) AS model_data(provider_name, model_name, display_name, model_type, context_length, supports_function_calling, max_tokens)
-WHERE p.name = model_data.provider_name
-ON CONFLICT (provider_id, model_name) DO NOTHING;
+-- Row Level Security: ensure users only access their own model preferences
+ALTER TABLE model_preferences ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can select their own model preferences" ON model_preferences
+    FOR SELECT USING (auth.jwt() ->> 'sub' = student_id);
+
+CREATE POLICY "Users can insert their own model preferences" ON model_preferences
+    FOR INSERT WITH CHECK (auth.jwt() ->> 'sub' = student_id);
+
+CREATE POLICY "Users can update their own model preferences" ON model_preferences
+    FOR UPDATE USING (auth.jwt() ->> 'sub' = student_id) WITH CHECK (auth.jwt() ->> 'sub' = student_id);
+
+CREATE POLICY "Users can delete their own model preferences" ON model_preferences
+    FOR DELETE USING (auth.jwt() ->> 'sub' = student_id);
+
 
 -- ===================================================================
 -- ANALYTICS TABLES FOR COMPREHENSIVE STUDENT PERFORMANCE TRACKING
