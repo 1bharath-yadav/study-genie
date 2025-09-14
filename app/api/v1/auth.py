@@ -132,6 +132,7 @@ async def get_user_profile(current_user: dict = Depends(get_current_user)):
     return {
         "user": {
             "id": student_id,
+            "student_id": student_id,
             "email": current_user.get("email"),
             "name": current_user.get("name"),
             "picture": current_user.get("picture"),

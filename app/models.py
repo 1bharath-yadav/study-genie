@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator, validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
 
@@ -23,11 +23,14 @@ class DifficultyLevel(str, Enum):
 
 
 class StudentData(BaseModel):
-    id: str
-    name: str
+    student_id: str
+    username: str
     email: str
+    full_name: str
     grade_level: Optional[str] = None
-    subjects: Optional[List[str]] = Field(default_factory=list)
+    bio: Optional[str] = None
+    # Accept either dict or list from DB or frontend
+    learning_preferences: Optional[Union[List[Any], Dict[str, Any]]] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -221,11 +224,13 @@ class RecommendationType(str, Enum):
 
 # Student Models
 class StudentCreate(BaseModel):
+    student_id: Optional[str]
     username: str = Field(..., min_length=3, max_length=50)
-    email: str
+    email: EmailStr
     full_name: str = Field(..., min_length=2, max_length=100)
-    learning_preferences: Dict[str, Any] = Field(default_factory=dict)
-    gemini_api_key: Optional[str] = None
+    grade_level: Optional[str] = None
+    bio: Optional[str] = None
+    learning_preferences: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
     @field_validator('username', 'full_name', mode='before')
     @classmethod
@@ -238,13 +243,16 @@ class StudentResponse(BaseModel):
     username: str
     email: str
     full_name: str
-    message: str
+    bio: Optional[str] = None
     has_api_key: bool = False
 
 
 class StudentUpdate(BaseModel):
     full_name: Optional[str] = None
-    learning_preferences: Optional[Dict[str, Any]] = None
+    grade_level: Optional[str] = None
+    bio: Optional[str] = None
+    # Accept either a dict or a list so frontend arrays validate correctly
+    learning_preferences: Optional[Union[List[Any], Dict[str, Any]]] = None
 
     @field_validator('full_name', mode='before')
     @classmethod
@@ -350,6 +358,8 @@ class ProcessFilesResponse(BaseModel):
     concept_name: Optional[str] = None
     difficulty_level: Optional[DifficultyLevel] = None
     estimated_study_time: Optional[str] = None
+    # Session tracking
+    session_id: Optional[str] = None
 
 
 # Progress Models

@@ -1,7 +1,7 @@
 # app/services/student_service.py
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from app.models import StudentData
+from app.models import StudentData, StudentUpdate
 from app.services.db import (
     create_supabase_client,
     get_student_by_id as db_get_student_by_id,
@@ -14,33 +14,93 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _normalize_learning_preferences(raw: Any) -> list:
+    """Normalize the stored learning_preferences JSONB to a list for the frontend.
+
+    Accepts lists, dicts, or null and returns a list of strings (or empty list).
+    """
+    try:
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            # Prefer explicit 'preferences' or values; otherwise use keys
+            if "preferences" in raw and isinstance(raw["preferences"], list):
+                return raw["preferences"]
+            # Convert dict values to list of strings
+            return [str(v) for v in raw.values()]
+        # Fallback: try parsing if it's a JSON string
+        import json
+
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                return _normalize_learning_preferences(parsed)
+            except Exception:
+                return [raw]
+        return []
+    except Exception:
+        return []
+
+
 def get_student_by_id(student_id: str) -> Optional[StudentData]:
     try:
         result = db_get_student_by_id(student_id)
-        if result:
-            return StudentData(**result)
-        return None
+        if not result:
+            return None
+
+        # Map DB columns to API model fields expected by frontend
+        mapped = {
+            "student_id": result.get("student_id") or result.get("id"),
+            "username": result.get("username"),
+            "email": result.get("email"),
+            "full_name": result.get("full_name") or result.get("username"),
+            "grade_level": result.get("grade_level"),
+            "bio": result.get("bio"),
+            "learning_preferences": result.get("learning_preferences") or {},
+            "created_at": result.get("created_at"),
+            "updated_at": result.get("updated_at"),
+        }
+        return StudentData(**mapped)
     except Exception as e:
         logger.error(f"Failed to get student {student_id}: {str(e)}")
         return None
 
-def update_student_data(student_id: str, student_data: StudentData) -> Optional[StudentData]:
+def update_student_data(student_id: str, student_data: StudentUpdate) -> Optional[StudentData]:
     try:
-        update_data = {}
-        if student_data.name is not None:
-            update_data["name"] = student_data.name
-        if student_data.email is not None:
-            update_data["email"] = student_data.email
-        if student_data.grade_level is not None:
+        update_data: Dict[str, Any] = {}
+        # Accept both frontend and backend keys for compatibility
+        # frontend may send 'name' or 'full_name'
+        if getattr(student_data, "full_name", None) is not None:
+            update_data["full_name"] = student_data.full_name
+        if getattr(student_data, "grade_level", None) is not None:
             update_data["grade_level"] = student_data.grade_level
-        if student_data.subjects is not None:
-            update_data["subjects"] = student_data.subjects
+        if getattr(student_data, "bio", None) is not None:
+            update_data["bio"] = student_data.bio
+        if getattr(student_data, "learning_preferences", None) is not None:
+            update_data["learning_preferences"] = student_data.learning_preferences
+
         if not update_data:
             return get_student_by_id(student_id)
+
         result = db_update_student(student_id, update_data)
-        if result:
-            return StudentData(**result)
-        return None
+        if not result:
+            return None
+
+        # Map result back to API model
+        mapped = {
+            "student_id": result.get("student_id") or result.get("id"),
+            "username": result.get("username"),
+            "email": result.get("email"),
+            "full_name": result.get("full_name") or result.get("username"),
+            "grade_level": result.get("grade_level"),
+            "bio": result.get("bio"),
+            "learning_preferences": result.get("learning_preferences") or {},
+            "created_at": result.get("created_at"),
+            "updated_at": result.get("updated_at"),
+        }
+        return StudentData(**mapped)
     except Exception as e:
         logger.error(f"Failed to update student {student_id}: {str(e)}")
         return None

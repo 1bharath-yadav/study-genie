@@ -9,7 +9,7 @@ from fastapi import HTTPException, status, Depends, Header
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from pydantic import BaseModel
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 import logging
 import hashlib
@@ -179,7 +179,8 @@ def get_current_student_id(current_user: dict = Depends(get_current_user)) -> st
     Extract user ID from current user token
     Returns the user ID (sub or student_id) as a string
     """
-    student_id = current_user.get("student_id")
+    # Prefer the JWT 'sub' claim as the canonical student_id (supabase uses sub as unique id)
+    student_id = current_user.get("sub") or current_user.get("student_id")
     if not student_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

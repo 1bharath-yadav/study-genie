@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS students (
 CREATE TABLE IF NOT EXISTS subjects (
     student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
     subject_id BIGSERIAL PRIMARY KEY,
-    llm_suggested_subject_name VARCHAR(200) NOT NULL UNIQUE,
+    llm_suggested_subject_name VARCHAR(200) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -40,8 +40,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(subject_id, llm_suggested_chapter_name),
-    UNIQUE(subject_id, chapter_order),
-    UNIQUE(student_id)
+    UNIQUE(subject_id, chapter_order)
 );
 
 -- Concepts table - created dynamically from LLM content analysis
@@ -57,19 +56,21 @@ CREATE TABLE IF NOT EXISTS concepts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(chapter_id, llm_suggested_concept_name),
-    UNIQUE(chapter_id, concept_order),
-    UNIQUE(student_id)
+    UNIQUE(chapter_id, concept_order)
 );
 
+-- Make subject name unique per student (allow same subject name across different students)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_student_name ON subjects(student_id, llm_suggested_subject_name);
+
 -- Uploaded Content table - tracks student uploads and LLM analysis
-CREATE TABLE IF NOT EXISTS learning_history (
-    content_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
-    original_filename VARCHAR(500) NOT NULL,
+CREATE TABLE IF NOT EXISTS public.learning_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    student_id VARCHAR(100),
+    session_name VARCHAR(500),
     student_prompt TEXT,
-    llm_response JSONB, -- structured analysis from LLM (subjects, chapters, concepts)
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    llm_response_history JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 

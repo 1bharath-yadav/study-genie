@@ -9,7 +9,8 @@ import logging
 from dataclasses import dataclass
 
 from app.services.db import (
-    get_student_by_id
+    get_student_by_id,
+    safe_extract_data,
 )
 from app.db.db_client import get_supabase_client
 
@@ -128,40 +129,124 @@ async def get_student_progress_data(student_id: str, time_range: AnalyticsTimeRa
     """Get raw student progress data from database"""
     try:
         supabase = get_supabase_client()
-        
-        # Get concept progress with related data
-        concept_query = """
-        SELECT 
-            cp.concept_id,
-            cp.mastery_score,
-            cp.attempts_count,
-            cp.correct_answers,
-            cp.total_questions,
-            cp.last_practiced,
-            c.concept_name,
-            ch.chapter_name,
-            s.subject_name
-        FROM concept_progress cp
-        JOIN concepts c ON cp.concept_id = c.concept_id
-        JOIN chapters ch ON c.chapter_id = ch.chapter_id
-        JOIN subjects s ON ch.subject_id = s.subject_id
-        WHERE cp.student_id = %s
-        AND cp.updated_at >= %s
-        ORDER BY cp.mastery_score DESC
-        """
-        
-        concept_response = supabase.rpc(
-            'execute_sql',
-            {
-                'query': concept_query,
-                'params': [student_id, time_range.start_date.isoformat()]
-            }
-        ).execute()
-        
-        return {
-            'concepts': concept_response.data if concept_response.data else [],
-            'time_range': time_range
-        }
+
+        # Fetch concept progress rows for the student within time range
+        try:
+            cp_resp = supabase.table('concept_progress')
+            cp_resp = cp_resp.select('*').eq('student_id', student_id).gte('updated_at', time_range.start_date.isoformat()).execute()
+            cp_rows = safe_extract_data(cp_resp)
+        except Exception as e:
+            # Table may not exist (PGRST205) or query failed; fall back below
+            logger.warning(f"concept_progress query failed or table missing: {e}")
+            cp_rows = []
+
+        # If no progress rows found, try fallbacks so we can still build subject/cards
+        if not cp_rows:
+            try:
+                # First fallback: try listing concepts for the student and synthesize progress rows
+                concepts_resp = supabase.table('concepts').select('*').eq('student_id', student_id).execute()
+                concepts_rows = safe_extract_data(concepts_resp)
+                if concepts_rows:
+                    cp_rows = []
+                    for c in concepts_rows:
+                        cp_rows.append({
+                            'concept_id': c.get('concept_id'),
+                            'mastery_score': 0,
+                            'attempts_count': 0,
+                            'correct_answers': 0,
+                            'total_questions': 0,
+                            'last_practiced': None,
+                            'updated_at': None
+                        })
+                else:
+                    # Second fallback: try reading recent learning_history entries and extract metadata
+                    lh_resp = supabase.table('learning_history').select('llm_response_history').eq('student_id', student_id).order('created_at', desc=True).limit(20).execute()
+                    lh_rows = safe_extract_data(lh_resp)
+                    cp_rows = []
+                    for row in lh_rows:
+                        history = row.get('llm_response_history') or []
+                        # history is a list of responses; extract metadata if present
+                        for item in history:
+                            try:
+                                meta = item.get('metadata') if isinstance(item, dict) else None
+                                if not meta:
+                                    continue
+                                cp_rows.append({
+                                    'concept_id': None,
+                                    'mastery_score': 0,
+                                    'attempts_count': 0,
+                                    'correct_answers': 0,
+                                    'total_questions': 0,
+                                    'last_practiced': None,
+                                    'updated_at': None,
+                                    'llm_meta': meta
+                                })
+                            except Exception:
+                                continue
+            except Exception as e:
+                logger.error(f"Fallbacks for concept progress failed: {e}")
+                return {'concepts': [], 'time_range': time_range}
+
+        # Collect concept ids and fetch concept metadata (if available)
+        concept_ids = list({r.get('concept_id') for r in cp_rows if r.get('concept_id') is not None})
+        concepts_map = {}
+        if concept_ids:
+            concepts_resp = supabase.table('concepts').select('*').in_('concept_id', tuple(concept_ids)).execute()
+            concepts = safe_extract_data(concepts_resp)
+            for c in concepts:
+                concepts_map[c.get('concept_id')] = c
+
+        # Collect chapter ids and subject ids to fetch names
+        chapter_ids = list({(concepts_map.get(cid) or {}).get('chapter_id') for cid in concept_ids if (concepts_map.get(cid) or {}).get('chapter_id') is not None})
+        chapters_map = {}
+        if chapter_ids:
+            chapters_resp = supabase.table('chapters').select('*').in_('chapter_id', tuple(chapter_ids)).execute()
+            chapters = safe_extract_data(chapters_resp)
+            for ch in chapters:
+                chapters_map[ch.get('chapter_id')] = ch
+
+        subject_ids = list({(chapters_map.get(chid) or {}).get('subject_id') for chid in chapter_ids if (chapters_map.get(chid) or {}).get('subject_id') is not None})
+        subjects_map = {}
+        if subject_ids:
+            subjects_resp = supabase.table('subjects').select('*').in_('subject_id', tuple(subject_ids)).execute()
+            subjects = safe_extract_data(subjects_resp)
+            for s in subjects:
+                subjects_map[s.get('subject_id')] = s
+
+        # Merge data into comparable dicts (handle concept rows that may only contain llm_meta)
+        merged = []
+        for r in cp_rows:
+            cid = r.get('concept_id')
+            if cid is not None:
+                concept = concepts_map.get(cid) or {}
+                concept_name = concept.get('llm_suggested_concept_name') or concept.get('concept_name')
+                chap = chapters_map.get(concept.get('chapter_id')) or {}
+                chapter_name = chap.get('llm_suggested_chapter_name') or chap.get('chapter_name')
+                subject = subjects_map.get(chap.get('subject_id')) or {}
+                subject_name = subject.get('llm_suggested_subject_name') or subject.get('subject_name')
+                subject_id_val = subject.get('subject_id')
+            else:
+                # use llm_meta if present
+                meta = r.get('llm_meta') or {}
+                concept_name = meta.get('concept_name') or meta.get('llm_suggested_concept_name')
+                chapter_name = meta.get('chapter_name') or meta.get('llm_suggested_chapter_name')
+                subject_name = meta.get('subject_name') or meta.get('llm_suggested_subject_name')
+                subject_id_val = None
+
+            merged.append({
+                'concept_id': cid,
+                'mastery_score': float(r.get('mastery_score') or 0),
+                'attempts_count': int(r.get('attempts_count') or 0),
+                'correct_answers': int(r.get('correct_answers') or 0),
+                'total_questions': int(r.get('total_questions') or 0),
+                'last_practiced': r.get('last_practiced') or r.get('updated_at'),
+                'concept_name': concept_name or 'Unnamed Concept',
+                'chapter_name': chapter_name or 'General',
+                'subject_name': subject_name or 'General',
+                'subject_id': subject_id_val
+            })
+
+        return {'concepts': merged, 'time_range': time_range}
     except Exception as e:
         logger.error(f"Error fetching student progress: {e}")
         return {'concepts': [], 'time_range': time_range}
@@ -171,36 +256,62 @@ async def get_learning_activities_data(student_id: str, time_range: AnalyticsTim
     """Get learning activities data"""
     try:
         supabase = get_supabase_client()
-        
-        activities_query = """
-        SELECT 
-            la.activity_type,
-            la.score,
-            la.time_spent,
-            la.completed_at,
-            c.concept_name,
-            s.subject_name
-        FROM learning_activities la
-        JOIN concepts c ON la.concept_id = c.concept_id
-        JOIN chapters ch ON c.chapter_id = ch.chapter_id
-        JOIN subjects s ON ch.subject_id = s.subject_id
-        WHERE la.student_id = %s
-        AND la.completed_at >= %s
-        ORDER BY la.completed_at DESC
-        """
-        
-        activities_response = supabase.rpc(
-            'execute_sql',
-            {
-                'query': activities_query,
-                'params': [student_id, time_range.start_date.isoformat()]
-            }
-        ).execute()
-        
-        return {
-            'activities': activities_response.data if activities_response.data else [],
-            'time_range': time_range
-        }
+
+        # Fetch learning activities
+        la_resp = supabase.table('learning_activities')
+        la_resp = la_resp.select('*').eq('student_id', student_id).gte('completed_at', time_range.start_date.isoformat()).order('completed_at', desc=True).execute()
+        la_rows = safe_extract_data(la_resp)
+
+        if not la_rows:
+            return {'activities': [], 'time_range': time_range}
+
+        # Fetch related concept metadata
+        activity_concept_ids = list({r.get('concept_id') for r in la_rows if r.get('concept_id') is not None})
+        concepts_map = {}
+        if activity_concept_ids:
+            concepts_resp = supabase.table('concepts').select('*').in_('concept_id', tuple(activity_concept_ids)).execute()
+            concepts = safe_extract_data(concepts_resp)
+            for c in concepts:
+                concepts_map[c.get('concept_id')] = c
+
+        # Fetch chapters and subjects similar to progress
+        chapter_ids = list({(concepts_map.get(cid) or {}).get('chapter_id') for cid in activity_concept_ids if (concepts_map.get(cid) or {}).get('chapter_id') is not None})
+        chapters_map = {}
+        if chapter_ids:
+            chapters_resp = supabase.table('chapters').select('*').in_('chapter_id', tuple(chapter_ids)).execute()
+            chapters = safe_extract_data(chapters_resp)
+            for ch in chapters:
+                chapters_map[ch.get('chapter_id')] = ch
+
+        subject_ids = list({(chapters_map.get(chid) or {}).get('subject_id') for chid in chapter_ids if (chapters_map.get(chid) or {}).get('subject_id') is not None})
+        subjects_map = {}
+        if subject_ids:
+            subjects_resp = supabase.table('subjects').select('*').in_('subject_id', tuple(subject_ids)).execute()
+            subjects = safe_extract_data(subjects_resp)
+            for s in subjects:
+                subjects_map[s.get('subject_id')] = s
+
+        merged = []
+        for r in la_rows:
+            cid = r.get('concept_id')
+            concept = concepts_map.get(cid) or {}
+            concept_name = concept.get('llm_suggested_concept_name') or concept.get('concept_name')
+            chapter = chapters_map.get(concept.get('chapter_id')) or {}
+            chapter_name = chapter.get('llm_suggested_chapter_name') or chapter.get('chapter_name')
+            subject = subjects_map.get(chapter.get('subject_id')) or {}
+            subject_name = subject.get('llm_suggested_subject_name') or subject.get('subject_name')
+
+            merged.append({
+                'activity_type': r.get('activity_type'),
+                'score': float(r.get('score') or 0),
+                'time_spent': int(r.get('time_spent') or 0),
+                'completed_at': r.get('completed_at'),
+                'concept_name': concept_name,
+                'chapter_name': chapter_name,
+                'subject_name': subject_name
+            })
+
+        return {'activities': merged, 'time_range': time_range}
     except Exception as e:
         logger.error(f"Error fetching learning activities: {e}")
         return {'activities': [], 'time_range': time_range}
@@ -327,12 +438,12 @@ def compute_weekly_trends(activities_data: List[Dict], weeks: int = 4) -> Tuple[
 async def resolve_student_id(student_identifier: str) -> Optional[str]:
     """Resolve student identifier (email or ID) to actual student_id"""
     try:
-        # Try direct lookup first
+        # Only accept the canonical primary key (student_id). Avoid resolving by email/username.
         student = get_student_by_id(student_identifier)
         if student:
             return student_identifier
-        
-        logger.warning(f"Could not resolve student identifier: {student_identifier}")
+
+        logger.warning(f"Could not resolve student identifier (not a student_id): {student_identifier}")
         return None
     except Exception as e:
         logger.error(f"Error resolving student ID: {e}")
@@ -358,7 +469,37 @@ async def get_dashboard_analytics(student_id: str, days: int = 30) -> Dict[str, 
         overall_mastery = (mastered_concepts / max(1, total_concepts)) * 100
         
         total_time_spent = sum(activity.get('time_spent', 0) for activity in activities_data['activities'])
-        
+        # Build nested subjects -> chapters -> concepts structure for frontend
+        subjects_structure: Dict[str, Dict[str, Any]] = {}
+        for c in progress_data['concepts']:
+            subj = c.get('subject_name') or 'General'
+            chap = c.get('chapter_name') or 'General'
+            if subj not in subjects_structure:
+                subjects_structure[subj] = {'subject_name': subj, 'total_concepts': 0, 'mastered_concepts': 0, 'mastery_percentage': 0, 'chapters': {}}
+
+            subjects_structure[subj]['total_concepts'] += 1
+            if c.get('mastery_score', 0) >= 70:
+                subjects_structure[subj]['mastered_concepts'] += 1
+
+            if chap not in subjects_structure[subj]['chapters']:
+                subjects_structure[subj]['chapters'][chap] = { 'concepts': [] }
+
+            subjects_structure[subj]['chapters'][chap]['concepts'].append({
+                'concept_name': c.get('concept_name') or 'Unnamed Concept',
+                'mastery_score': c.get('mastery_score') or 0,
+                'status': 'mastered' if (c.get('mastery_score') or 0) >= 70 else 'in_progress',
+                'last_practiced': c.get('last_practiced'),
+                'attempts_count': c.get('attempts_count') or 0
+            })
+
+        # finalize mastery_percentage per subject
+        for subj_key, subj_val in subjects_structure.items():
+            total = subj_val['total_concepts'] or 1
+            subj_val['mastery_percentage'] = (subj_val['mastered_concepts'] / total) * 100
+
+        # Convert to list for frontend consumption
+        subjects_list = list(subjects_structure.values())
+
         return {
             'student_id': student_id,
             'time_range_days': days,
@@ -396,6 +537,8 @@ async def get_dashboard_analytics(student_id: str, days: int = 30) -> Dict[str, 
                 }
                 for concept in concept_progress
             ]
+            ,
+            'subjects': subjects_list
         }
     except Exception as e:
         logger.error(f"Error computing dashboard analytics: {e}")

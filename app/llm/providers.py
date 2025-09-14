@@ -7,10 +7,8 @@ This module uses the official pydantic-ai model and provider classes for each ve
 from typing import Dict
 import logging
 
-from pydantic_ai import Agent, StructuredDict
-from .types import LEARNING_CONTENT, LEARNING_CONTENT_SCHEMA, LearningContent
-
 # Import model and provider classes
+from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -196,7 +194,8 @@ def _create_model(provider: str, model_name: str, api_key: str):
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
-async def create_learning_agent(provider: str, model_name: str, api_key: str):
+def create_learning_agent(provider: str, model_name: str, api_key: str):
     """Create an agent for generating learning content."""
     model = _create_model(provider, model_name, api_key)
     return Agent(model)
+
