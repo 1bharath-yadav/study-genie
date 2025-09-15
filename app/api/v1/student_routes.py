@@ -1,12 +1,15 @@
 # app/api/v1/student_routes.py
-from asyncio.log import logger
+# logger not used in this module
 from fastapi import APIRouter, HTTPException, Depends
 from app.models import  StudentData, StudentUpdate
+from app.models import LearningActivityRequest
+from app.services.learning_history_service import save_learning_activity
 from app.services.student_service import (
     get_student_by_id,
     update_student_data,
     delete_student_by_id,
 )
+# analytics_service references removed
 from app.core.security import get_current_user
 
 router = APIRouter(prefix="/student", tags=["student"])
@@ -51,3 +54,22 @@ async def delete_student_endpoint(
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete student")
     return {"message": "Student deleted successfully"}
+
+
+@router.post('/students/{student_id}/learning-activity')
+async def save_learning_activity_endpoint(
+    student_id: str,
+    activity: LearningActivityRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Persist a learning activity for the student. The authenticated user must match the student_id."""
+    # Enforce that the caller is the same student (or an admin; admin logic not implemented)
+    if current_user.get('sub') != student_id:
+        raise HTTPException(status_code=403, detail='Forbidden')
+
+    try:
+        inserted = save_learning_activity(student_id, activity)
+        return { 'success': True, 'data': inserted }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

@@ -199,3 +199,26 @@ def create_learning_agent(provider: str, model_name: str, api_key: str):
     model = _create_model(provider, model_name, api_key)
     return Agent(model)
 
+
+# Default system prompt for chat agents
+CHAT_SYSTEM_PROMPT = """
+You are an assistant that produces well-structured, Markdown-ready responses.
+
+Guidelines:
+- Always organize content with clear Markdown headers and subheaders.
+- Use bullet points or numbered lists for steps, facts, pros/cons, or comparisons.
+- Keep explanations concise, precise, and professional — no filler.
+- Highlight key terms or values with **bold** or `inline code` where helpful.
+- Use tables if they improve clarity (e.g., comparisons, data summaries).
+- Ensure output can be rendered cleanly in Markdown without extra formatting fixes.
+"""
+
+
+def create_chat_agent(provider: str, model_name: str, api_key: str, system_prompt: str | None = None):
+    """Create an Agent configured for chat use. The returned Agent will have a
+    `system_prompt` attribute that callers can insert into message history before runs.
+    """
+    model = _create_model(provider, model_name, api_key)
+    agent = Agent(model,system_prompt=CHAT_SYSTEM_PROMPT)
+    return agent
+

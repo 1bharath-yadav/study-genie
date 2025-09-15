@@ -3,19 +3,19 @@
 
 BEGIN;
 
--- 1) Ensure session_id exists on learning_history (add if missing)
+-- 1) Ensure session_id exists on chat_history (add if missing)
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name='learning_history' AND column_name='session_id'
+        WHERE table_name='chat_history' AND column_name='session_id'
     ) THEN
-        ALTER TABLE learning_history ADD COLUMN session_id UUID DEFAULT gen_random_uuid();
+        ALTER TABLE chat_history ADD COLUMN session_id UUID DEFAULT gen_random_uuid();
     END IF;
 END$$;
 
 -- 2) Backfill NULL session_id values with a new UUID (so every row belongs to a session)
-UPDATE learning_history SET session_id = gen_random_uuid() WHERE session_id IS NULL;
+UPDATE chat_history SET session_id = gen_random_uuid() WHERE session_id IS NULL;
 
 -- 3) Create a minimal sessions table to list sessions and hold aggregated LLM history
 CREATE TABLE IF NOT EXISTS learning_sessions (
@@ -27,22 +27,22 @@ CREATE TABLE IF NOT EXISTS learning_sessions (
     updated_at TIMESTAMP WITH TIME ZONE
 );
 
--- 4) Populate learning_sessions by aggregating per-session llm_response_history from learning_history
+-- 4) Populate learning_sessions by aggregating per-session llm_response_history and study_material_history from chat_history
 --    This aggregates arrays across rows for the same session_id into one array.
 INSERT INTO learning_sessions (session_id, student_id, session_name, llm_response_history, created_at, updated_at)
 SELECT
-    lh.session_id,
-    lh.student_id,
+    ch.session_id,
+    ch.student_id,
     -- prefer session_name if present, else NULL
-    MAX(CASE WHEN lh.session_name IS NOT NULL THEN lh.session_name END) AS session_name,
+    MAX(CASE WHEN ch.session_name IS NOT NULL THEN ch.session_name END) AS session_name,
     COALESCE(jsonb_agg(elem) FILTER (WHERE elem IS NOT NULL), '[]'::jsonb) AS llm_response_history,
-    MIN(lh.created_at) AS created_at,
-    MAX(lh.updated_at) AS updated_at
-FROM learning_history lh,
+    MIN(ch.created_at) AS created_at,
+    MAX(ch.updated_at) AS updated_at
+FROM chat_history ch,
     LATERAL (
-        SELECT jsonb_array_elements(coalesce(lh.llm_response_history, '[]'::jsonb)) AS elem
+        SELECT jsonb_array_elements(coalesce(ch.llm_response_history, '[]'::jsonb)) AS elem
     ) elems
-GROUP BY lh.session_id, lh.student_id
+GROUP BY ch.session_id, ch.student_id
 ON CONFLICT (session_id) DO NOTHING;
 
 COMMIT;

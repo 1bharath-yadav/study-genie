@@ -80,8 +80,9 @@ Quick examples
   - `chunks = app.llm.process_files.file_process.create_document_chunks(docs)`
 
 - write concise,pure functional programming code
-- never create extra files.
+
 - remve the redundent files immediately, keep code concise,modularise
 - modify the supabase migration that is suitable for our code,      this is development phase so we can delete and modify any tables.
  - the providers and models should come from   PROVIDERS_JSON  all providers related functions should in app/llm/providers.py
+ - Never add fallbacks and extra clutter , keep code simple,concise.
 If you want, I can expand these entries into a short checklist of functions to call when implementing a new end-to-end flow (ingest -> embed -> store -> retrieve -> generate) and add code snippets/tests for them.
