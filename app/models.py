@@ -1,16 +1,203 @@
-# progress_tracker/models.py
-from pydantic import BaseModel, Field, validator
-from typing import Dict, Any, List, Optional, Union
+# app/models.py
+from __future__ import annotations
+
+from pydantic import BaseModel, Field, EmailStr, field_validator, model_validator, validator
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
 
-# Enums
+
+
+
+
+class ModelType(str, Enum):
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+    COMPLETION = "completion"
 
 
 class DifficultyLevel(str, Enum):
     EASY = "Easy"
     MEDIUM = "Medium"
     HARD = "Hard"
+
+
+class StudentData(BaseModel):
+    student_id: str
+    username: str
+    email: str
+    full_name: str
+    grade_level: Optional[str] = None
+    bio: Optional[str] = None
+    # Accept either dict or list from DB or frontend
+    learning_preferences: Optional[Union[List[Any], Dict[str, Any]]] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+# Pure data models for API keys
+class APIKeyCreate(BaseModel):
+    provider_id: str
+    api_key: str = Field(..., min_length=5)  # Reduced minimum length
+    
+    @validator('api_key')
+    def validate_api_key(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError('API key cannot be empty')
+        # Remove any common prefixes or whitespace that might be accidentally copied
+        if v.startswith('sk-') or v.startswith('AIza'):
+            # These are valid prefixes, don't reject them
+            return v
+        return v
+
+class APIKeyResponse(BaseModel):
+    id: str
+    provider_id: str
+    provider_name: str
+    provider_display_name: str
+    is_active: bool
+    is_default: bool
+    student_id: str
+    created_at: datetime
+
+
+# Pure data models for LLM providers and models
+class ProviderResponse(BaseModel):
+    id: str
+    name: str
+    display_name: str
+    base_url: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    # Optional capabilities and model list coming from provider definitions
+    capabilities: Optional[List[str]] = Field(default_factory=list)
+    models: Optional[List[str]] = Field(default_factory=list)
+
+
+class ModelResponse(BaseModel):
+    id: str
+    provider_id: str
+    model_name: str
+    display_name: str
+    model_type: ModelType
+    context_length: Optional[int] = None
+    supports_system_prompt: bool = True
+    supports_function_calling: bool = False
+    max_tokens: Optional[int] = None
+    is_active: bool
+    features: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class UserModelPreference(BaseModel):
+    id: str
+    student_id: str
+    model_id: str
+    model_name: str
+    model_display_name: str
+    provider_name: str
+    use_for_chat: bool = False
+    use_for_embedding: bool = False
+    is_default: bool = False
+    created_at: datetime
+
+
+class UserModelPreferenceCreate(BaseModel):
+    model_id: str
+    use_for_chat: bool = False
+    use_for_embedding: bool = False
+    is_default: bool = False
+
+
+class UserModelPreferenceUpdate(BaseModel):
+    use_for_chat: Optional[bool] = None
+    use_for_embedding: Optional[bool] = None
+    is_default: Optional[bool] = None
+    is_available: Optional[bool] = None
+
+
+# Pure data models for study sessions
+class StudySessionCreate(BaseModel):
+    student_id: str
+    session_name: str
+    subject: Optional[str] = None
+    embedding_model_id: Optional[str] = None
+    llm_model_id: Optional[str] = None
+
+
+# Pure data models for content processing
+class DocumentUpload(BaseModel):
+    filename: str
+    content: bytes
+    content_type: str
+
+
+class ProcessedContent(BaseModel):
+    id: str
+    filename: str
+    content_text: str
+    embeddings: Optional[List[float]]
+    session_id: str
+    created_at: datetime
+
+
+# Pure data models for study materials
+class FlashcardData(BaseModel):
+    question: str
+    answer: str
+    difficulty: DifficultyLevel
+
+
+class QuizQuestion(BaseModel):
+    question: str
+    options: List[str]
+    correct_answer: str
+    explanation: str
+
+
+class StudyMaterial(BaseModel):
+    flashcards: List[FlashcardData] = Field(default_factory=list)
+    quiz_questions: List[QuizQuestion] = Field(default_factory=list)
+    summary: str = ""
+    learning_objectives: List[str] = Field(default_factory=list)
+
+
+# Pure data models for LLM interactions
+class GenerateTextRequest(BaseModel):
+    prompt: str
+    model_id: str
+    max_tokens: int = 1000
+    temperature: float = 0.7
+    system_prompt: Optional[str] = None
+
+
+class LLMResponse(BaseModel):
+    text: str
+
+
+class StudyContentRequest(BaseModel):
+    prompt: str
+    model_id: str
+
+
+class StudyContent(BaseModel):
+    key_concepts: List[str] = Field(default_factory=list)
+    summary: str = ""
+    important_figures: List[str] = Field(default_factory=list)
+
+
+class QARequest(BaseModel):
+    prompt: str
+    model_id: str
+
+
+class Question(BaseModel):
+    question: str
+    answer: str
+
+
+class QuestionAnswer(BaseModel):
+    questions: List[Question] = Field(default_factory=list)
 
 
 class ConceptStatus(str, Enum):
@@ -25,24 +212,23 @@ class ActivityType(str, Enum):
     QUIZ_ATTEMPT = "quiz_attempt"
     CONTENT_STUDY = "content_study"
     CONCEPT_REVIEW = "concept_review"
+    MATCH_THE_FOLLOWING = "match_the_following"
 
-
-class RecommendationType(str, Enum):
-    CONCEPT_REVIEW = "concept_review"
-    PRACTICE_MORE = "practice_more"
-    ADVANCE_TOPIC = "advance_topic"
-    MAINTENANCE_PRACTICE = "maintenance_practice"
-    WEAKNESS_FOCUS = "weakness_focus"
 
 # Student Models
-
-
 class StudentCreate(BaseModel):
+    student_id: Optional[str]
     username: str = Field(..., min_length=3, max_length=50)
-    email: str = Field(..., pattern=r'^[^@]+@[^@]+\.[^@]+$')
+    email: EmailStr
     full_name: str = Field(..., min_length=2, max_length=100)
-    learning_preferences: Optional[Dict[str, Any]] = {}
-    gemini_api_key: Optional[str] = None
+    grade_level: Optional[str] = None
+    bio: Optional[str] = None
+    learning_preferences: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator('username', 'full_name', mode='before')
+    @classmethod
+    def strip_names(cls, v: str):
+        return v.strip() if isinstance(v, str) else v
 
 
 class StudentResponse(BaseModel):
@@ -50,20 +236,29 @@ class StudentResponse(BaseModel):
     username: str
     email: str
     full_name: str
-    message: str
+    bio: Optional[str] = None
     has_api_key: bool = False
 
 
 class StudentUpdate(BaseModel):
     full_name: Optional[str] = None
-    learning_preferences: Optional[Dict[str, Any]] = None
+    grade_level: Optional[str] = None
+    bio: Optional[str] = None
+    # Accept either a dict or a list so frontend arrays validate correctly
+    learning_preferences: Optional[Union[List[Any], Dict[str, Any]]] = None
+
+    @field_validator('full_name', mode='before')
+    @classmethod
+    def strip_full_name(cls, v: Optional[str]):
+        return v.strip() if isinstance(v, str) else v
 
 
 class ApiKeyRequest(BaseModel):
     api_key: str = Field(..., min_length=30, max_length=100)
 
-    @validator('api_key')
-    def validate_api_key(cls, v):
+    @field_validator('api_key', mode='after')
+    @classmethod
+    def validate_api_key(cls, v: str) -> str:
         if not v.startswith('AIza'):
             raise ValueError('Invalid Gemini API key format')
         return v.strip()
@@ -77,21 +272,15 @@ class ApiKeyResponse(BaseModel):
 class ApiKeyUpdateRequest(BaseModel):
     new_api_key: str = Field(..., min_length=30, max_length=100)
 
-    @validator('new_api_key')
-    def validate_api_key(cls, v):
+    @field_validator('new_api_key', mode='after')
+    @classmethod
+    def validate_api_key(cls, v: str) -> str:
         if not v.startswith('AIza'):
             raise ValueError('Invalid Gemini API key format')
         return v.strip()
 
+
 # Core LLM Response Models
-
-
-class FlashcardData(BaseModel):
-    question: str
-    answer: str
-    difficulty: DifficultyLevel
-
-
 class QuizData(BaseModel):
     question: str
     options: List[str] = Field(default_factory=list)
@@ -116,8 +305,9 @@ class LLMResponseRequest(BaseModel):
     user_query: str
     difficulty_level: Optional[DifficultyLevel] = DifficultyLevel.MEDIUM
 
-    @validator('subject_name', 'chapter_name', 'concept_name')
-    def validate_names(cls, v):
+    @field_validator('subject_name', 'chapter_name', 'concept_name', mode='after')
+    @classmethod
+    def validate_names(cls, v: str) -> str:
         if not v or len(v.strip()) < 2:
             raise ValueError('Name must be at least 2 characters long')
         return v.strip().title()
@@ -159,12 +349,13 @@ class ProcessFilesResponse(BaseModel):
     subject_name: Optional[str] = None
     chapter_name: Optional[str] = None
     concept_name: Optional[str] = None
-    difficulty_level: Optional[str] = None
+    difficulty_level: Optional[DifficultyLevel] = None
     estimated_study_time: Optional[str] = None
+    # Session tracking
+    session_id: Optional[str] = None
+
 
 # Progress Models
-
-
 class ConceptProgressUpdate(BaseModel):
     concept_id: int
     correct_answers: int = Field(..., ge=0)
@@ -172,11 +363,11 @@ class ConceptProgressUpdate(BaseModel):
     time_spent: Optional[int] = Field(None, ge=0)  # in seconds
     activity_type: ActivityType = ActivityType.QUIZ_ATTEMPT
 
-    @validator('total_questions')
-    def validate_total_questions(cls, v, values):
-        if 'correct_answers' in values and v < values['correct_answers']:
+    @model_validator(mode='after')
+    def validate_counts(self):
+        if self.total_questions < self.correct_answers:
             raise ValueError('Total questions must be >= correct answers')
-        return v
+        return self
 
 
 class ConceptProgress(BaseModel):
@@ -201,9 +392,8 @@ class StudentProgressResponse(BaseModel):
     mastered_concepts: int
     weak_concepts: int
 
+
 # Learning Activity Models
-
-
 class LearningActivityRequest(BaseModel):
     """Request model for learning activity tracking"""
     activity_type: ActivityType
@@ -222,15 +412,14 @@ class LearningActivityRequest(BaseModel):
     # e.g., "llm_generated", "manual_upload"
     content_source: Optional[str] = None
 
-    @validator('total_questions')
-    def validate_total_questions(cls, v, values):
-        if 'correct_answers' in values and v < values['correct_answers']:
+    @model_validator(mode='after')
+    def validate_counts(self):
+        if self.total_questions < self.correct_answers:
             raise ValueError('Total questions must be >= correct answers')
-        return v
+        return self
+
 
 # Weakness Models
-
-
 class WeaknessRecord(BaseModel):
     concept_id: int
     weakness_type: str
@@ -251,9 +440,8 @@ class WeaknessAnalysis(BaseModel):
     is_resolved: bool
     recommended_actions: List[str] = Field(default_factory=list)
 
+
 # Study Session Models
-
-
 class StudySessionStart(BaseModel):
     subject_name: str
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
@@ -285,69 +473,14 @@ class StudySessionHistory(BaseModel):
     started_at: datetime
     completed_at: Optional[datetime] = None
 
-# Recommendation Models
 
 
-class RecommendationResponse(BaseModel):
-    recommendation_id: int
-    recommendation_type: RecommendationType
-    title: str
-    description: str
-    priority_score: int = Field(..., ge=1, le=10)
-    concept_id: Optional[int] = None
-    concept_name: Optional[str] = None
-    subject_name: Optional[str] = None
-    is_active: bool = True
-    is_completed: bool = False
-    created_at: datetime
-    expires_at: Optional[datetime] = None
-
-# Analytics Models
 
 
-class OverallStats(BaseModel):
-    total_concepts: int = 0
-    mastered_concepts: int = 0
-    in_progress_concepts: int = 0
-    weak_concepts: int = 0
-    average_mastery_score: float = 0.0
-    total_study_time: int = 0  # in minutes
-    streak_days: int = 0
-    last_active: Optional[datetime] = None
+# Analytics Models removed — analytics feature has been deleted
 
-
-class SubjectProgressStats(BaseModel):
-    subject_id: int
-    subject_name: str
-    total_concepts: int
-    mastered_concepts: int
-    average_score: float
-    time_spent: int  # in minutes
-    last_activity: Optional[datetime] = None
-    progress_percentage: float
-
-
-class ActivityStats(BaseModel):
-    activity_type: ActivityType
-    count: int
-    average_score: Optional[float] = None
-    total_time: int = 0  # in minutes
-    last_activity: Optional[datetime] = None
-
-
-class StudentAnalyticsResponse(BaseModel):
-    student_id: str
-    overall_stats: OverallStats
-    subject_progress: List[SubjectProgressStats]
-    activity_stats: List[ActivityStats]
-    weekly_progress: List[Dict[str, Any]]  # Weekly activity data
-    learning_velocity: float = 0.0  # Concepts mastered per week
-    focus_areas: List[str] = Field(default_factory=list)
-    achievements: List[str] = Field(default_factory=list)
 
 # Subject and Content Models
-
-
 class ConceptInfo(BaseModel):
     concept_id: int
     concept_name: str
@@ -377,9 +510,8 @@ class SubjectStructure(BaseModel):
     subject_info: SubjectInfo
     chapters: List[ChapterInfo]
 
+
 # Learning Path Models
-
-
 class LearningPathStep(BaseModel):
     step_order: int
     concept_id: int
@@ -399,9 +531,8 @@ class LearningPathResponse(BaseModel):
     completion_percentage: float
     next_milestone: Optional[str] = None
 
+
 # Batch Processing Models
-
-
 class QuizResult(BaseModel):
     concept_id: int
     question_id: Optional[str] = None
@@ -428,37 +559,25 @@ class FlashcardSessionResults(BaseModel):
     session_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
     total_session_time: Optional[int] = None  # in seconds
 
-# Dashboard Models
 
+# Dashboard Models removed (analytics no longer available)
 
-class DashboardData(BaseModel):
-    student_id: str
-    analytics: StudentAnalyticsResponse
-    recommendations: List[RecommendationResponse]
-    recent_activity: List[Dict[str, Any]]
-    upcoming_reviews: List[Dict[str, Any]] = Field(default_factory=list)
-    achievements: List[str] = Field(default_factory=list)
-    learning_streaks: Dict[str, int] = Field(default_factory=dict)
 
 # Error Models
-
-
 class ErrorResponse(BaseModel):
     error: str
     message: str
     details: Optional[Dict[str, Any]] = None
 
+
 # Validation Models
-
-
 class ValidationResult(BaseModel):
     is_valid: bool
     errors: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
+
 # Search and Filter Models
-
-
 class ConceptSearchFilter(BaseModel):
     subject_id: Optional[int] = None
     chapter_id: Optional[int] = None
@@ -475,7 +594,6 @@ class ProgressFilter(BaseModel):
 
 
 # File Processing Models
-
 class FileProcessRequest(BaseModel):
     student_id: Optional[str] = None
     subject_name: Optional[str] = None

@@ -48,7 +48,7 @@ StudyGenie addresses these challenges by:
          ▼                       ▼                       ▼
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   UI/UX Layer   │    │   Database      │    │   Vector Store  │
-│                 │    │   (PostgreSQL)  │    │   (FIASS)     │
+│                 │    │   (supabase)    │    │   (FIASS)     │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
