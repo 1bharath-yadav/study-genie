@@ -22,12 +22,6 @@ CREATE TABLE IF NOT EXISTS subjects (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS student_enrollments (
-    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
-    enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE,
-    UNIQUE(student_id)
-);
 
 -- Chapters table - created dynamically from LLM content analysis
 CREATE TABLE IF NOT EXISTS chapters (
@@ -63,14 +57,19 @@ CREATE TABLE IF NOT EXISTS concepts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_student_name ON subjects(student_id, llm_suggested_subject_name);
 
 -- Uploaded Content table - tracks student uploads and LLM analysis
-CREATE TABLE IF NOT EXISTS public.learning_history (
+CREATE TABLE IF NOT EXISTS public.chat_history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     student_id VARCHAR(100),
     session_name VARCHAR(500),
     student_prompt TEXT,
+    -- conversational chat entries (user + assistant summaries)
     llm_response_history JSONB DEFAULT '[]'::jsonb,
+    -- full structured learning material outputs produced by the langchain agent
+    study_material_history JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    -- session identifier (one session can have multiple rows if needed)
+    session_id UUID DEFAULT gen_random_uuid()
 );
 
 
@@ -132,47 +131,7 @@ CREATE TABLE IF NOT EXISTS learning_activities (
     completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS recommendations (
-    recommendation_id BIGSERIAL PRIMARY KEY,
-    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
-    concept_id BIGINT REFERENCES concepts(concept_id),
-    recommendation_type VARCHAR(50) NOT NULL,
-    title VARCHAR(200) NOT NULL,
-    description TEXT NOT NULL,
-    priority_score INTEGER DEFAULT 5,
-    is_active BOOLEAN DEFAULT TRUE,
-    is_completed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS study_sessions (
-    session_id SERIAL PRIMARY KEY,
-    student_id VARCHAR(100) REFERENCES students(student_id) ON DELETE CASCADE,
-    subject_id BIGINT REFERENCES subjects(subject_id) ON DELETE CASCADE,
-    session_data JSONB NOT NULL,
-    total_questions INTEGER DEFAULT 0,
-    correct_answers INTEGER DEFAULT 0,
-    session_duration INTEGER,
-    started_at TIMESTAMP NOT NULL,
-    completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS student_recommendations (
-    id BIGSERIAL PRIMARY KEY,
-    student_id VARCHAR(100) NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
-    recommendation_type VARCHAR(100) NOT NULL,
-    subject VARCHAR(255),
-    chapter VARCHAR(255),
-    priority VARCHAR(20) NOT NULL DEFAULT 'medium',
-    message TEXT NOT NULL,
-    suggested_actions TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    order_index INTEGER DEFAULT 0,
-    is_read BOOLEAN DEFAULT FALSE,
-    is_dismissed BOOLEAN DEFAULT FALSE
-);
+-- Recommendations and student_recommendations tables removed (feature deprecated)
 
 -- User API Keys table 
 
@@ -332,7 +291,6 @@ CREATE TABLE IF NOT EXISTS subject_analytics (
     performance_trend VARCHAR(20) DEFAULT 'stable', -- 'improving', 'declining', 'stable'
     weak_concepts TEXT[], -- Array of concept names where student struggles
     strong_concepts TEXT[], -- Array of concept names where student excels
-    recommended_focus_areas TEXT[], -- AI-generated recommendations
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(student_id, subject_id)
@@ -344,7 +302,7 @@ CREATE TABLE IF NOT EXISTS learning_path_analytics (
     student_id VARCHAR(100) NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
     subject_id BIGINT NOT NULL,
     chapter_id BIGINT REFERENCES chapters(chapter_id) ON DELETE CASCADE,
-    optimal_sequence TEXT[], -- Recommended order of concepts
+    optimal_sequence TEXT[], -- (deprecated - kept for backward compat)
     actual_sequence TEXT[], -- Actual order student followed
     sequence_efficiency DECIMAL(5,2) DEFAULT 0.0, -- How close to optimal
     prerequisite_gaps TEXT[], -- Missing prerequisite concepts

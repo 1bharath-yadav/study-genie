@@ -8,7 +8,6 @@ from . import (
     api_key_routes, 
     provider_routes, 
     llm_routes,
-    analytics_routes,
     session_routes,
     model_preferences,
     models
@@ -21,7 +20,7 @@ router.include_router(student_routes.router)
 router.include_router(api_key_routes.router) 
 router.include_router(provider_routes.router)
 router.include_router(llm_routes.router)
-router.include_router(analytics_routes.router)  # Analytics routes
+    # analytics_routes removed
 router.include_router(session_routes.router)
 router.include_router(model_preferences.router)
 router.include_router(models.router)

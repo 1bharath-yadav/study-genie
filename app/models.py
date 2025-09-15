@@ -212,14 +212,7 @@ class ActivityType(str, Enum):
     QUIZ_ATTEMPT = "quiz_attempt"
     CONTENT_STUDY = "content_study"
     CONCEPT_REVIEW = "concept_review"
-
-
-class RecommendationType(str, Enum):
-    CONCEPT_REVIEW = "concept_review"
-    PRACTICE_MORE = "practice_more"
-    ADVANCE_TOPIC = "advance_topic"
-    MAINTENANCE_PRACTICE = "maintenance_practice"
-    WEAKNESS_FOCUS = "weakness_focus"
+    MATCH_THE_FOLLOWING = "match_the_following"
 
 
 # Student Models
@@ -481,62 +474,10 @@ class StudySessionHistory(BaseModel):
     completed_at: Optional[datetime] = None
 
 
-# Recommendation Models
-class RecommendationResponse(BaseModel):
-    recommendation_id: int
-    recommendation_type: RecommendationType
-    title: str
-    description: str
-    priority_score: int = Field(..., ge=1, le=10)
-    concept_id: Optional[int] = None
-    concept_name: Optional[str] = None
-    subject_name: Optional[str] = None
-    is_active: bool = True
-    is_completed: bool = False
-    created_at: datetime
-    expires_at: Optional[datetime] = None
 
 
-# Analytics Models
-class OverallStats(BaseModel):
-    total_concepts: int = 0
-    mastered_concepts: int = 0
-    in_progress_concepts: int = 0
-    weak_concepts: int = 0
-    average_mastery_score: float = 0.0
-    total_study_time: int = 0  # in minutes
-    streak_days: int = 0
-    last_active: Optional[datetime] = None
 
-
-class SubjectProgressStats(BaseModel):
-    subject_id: int
-    subject_name: str
-    total_concepts: int
-    mastered_concepts: int
-    average_score: float
-    time_spent: int  # in minutes
-    last_activity: Optional[datetime] = None
-    progress_percentage: float
-
-
-class ActivityStats(BaseModel):
-    activity_type: ActivityType
-    count: int
-    average_score: Optional[float] = None
-    total_time: int = 0  # in minutes
-    last_activity: Optional[datetime] = None
-
-
-class StudentAnalyticsResponse(BaseModel):
-    student_id: str
-    overall_stats: OverallStats
-    subject_progress: List[SubjectProgressStats]
-    activity_stats: List[ActivityStats]
-    weekly_progress: List[Dict[str, Any]]  # Weekly activity data
-    learning_velocity: float = 0.0  # Concepts mastered per week
-    focus_areas: List[str] = Field(default_factory=list)
-    achievements: List[str] = Field(default_factory=list)
+# Analytics Models removed — analytics feature has been deleted
 
 
 # Subject and Content Models
@@ -619,15 +560,7 @@ class FlashcardSessionResults(BaseModel):
     total_session_time: Optional[int] = None  # in seconds
 
 
-# Dashboard Models
-class DashboardData(BaseModel):
-    student_id: str
-    analytics: StudentAnalyticsResponse
-    recommendations: List[RecommendationResponse]
-    recent_activity: List[Dict[str, Any]]
-    upcoming_reviews: List[Dict[str, Any]] = Field(default_factory=list)
-    achievements: List[str] = Field(default_factory=list)
-    learning_streaks: Dict[str, int] = Field(default_factory=dict)
+# Dashboard Models removed (analytics no longer available)
 
 
 # Error Models

@@ -37,9 +37,7 @@ from app.llm.types import LEARNING_CONTENT_SCHEMA
 
 load_dotenv()
 
-# Configuration - No global API key, only use student's API key
-# google_api_key = os.getenv("GEMINI_API_KEY")  # Removed global API key
-# genai.configure(api_key=google_api_key)  # No global configuration
+# Configuration - No global API key; per-user API keys are used at runtime
 
 logger = logging.getLogger("enhanced_rag_pipeline")
 logging.basicConfig(level=logging.INFO)
@@ -293,7 +291,7 @@ def _transcribe_sync(path: Path) -> str:
     # try local whisper if available; otherwise empty
     try:
         import whisper
-        model = whisper.load_model("base")
+        model = whisper.load_model("base")  # type: ignore[attr-defined]
         result = model.transcribe(str(path))
         return result.get("text", "").strip()
     except Exception:
@@ -555,8 +553,6 @@ Content: {content}
 
     return "\n".join(context_parts)
 
-logger = logging.getLogger(__name__)
-
 # ----- Pure helpers -----
 
 def detect_content_type(query: str, content_type: str) -> str:
@@ -695,83 +691,48 @@ async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, te
             # Generate structured response directly without vector store
             response = await generate_structured_response(formatted_context, userprompt, provider_name, model_name, user_api_key, content_type)
 
-            # Persist the LLM response into learning_history for session/history tracking
-            created_session_id = None
+            # Persist the LLM response into chat_history via service helper
+            out_session_id = None
             try:
-                from app.db.db_client import get_supabase_client
-                import uuid
+                from app.services.learning_history_service import upsert_chat_history
 
-                client = get_supabase_client()
-
-                # Determine session_name from response metadata when available when not provided
+                # Build a guaranteed session name from LLM metadata: Subject | Chapter | Concept
+                # This ensures the session_name is never optional and is consistent across writes.
+                composed_session_name = None
                 try:
-                    meta = response.get('metadata') if isinstance(response, dict) else None
-                    subj = meta.get('subject_name') if meta else None
-                    conc = meta.get('concept_name') if meta else None
-                    if not session_name:
-                        if subj and conc:
-                            session_name = f"{subj} - {conc}"
-                        elif subj:
-                            session_name = subj
-                        elif conc:
-                            session_name = conc
+                    if isinstance(response, dict):
+                        meta = response.get('metadata') or {}
+                        subject_name = (meta.get('subject_name') or meta.get('subject') or '').strip()
+                        chapter_name = (meta.get('chapter_name') or meta.get('chapter') or '').strip()
+                        concept_name = (meta.get('concept_name') or meta.get('concept') or '').strip()
+
+                        composed_session_name = f"{subject_name}-{chapter_name}-{concept_name}"
                 except Exception:
-                    pass
+                    composed_session_name = None
 
-                now_iso = datetime.now().isoformat()
+                # prefer an explicit composed name, then caller-provided session_name, then fallback
+                final_session_name = composed_session_name or session_name or f"Uncategorized | {datetime.now().date()}"
 
-                # If session_id is supplied, try to append to llm_response_history for that session_id
-                if session_id:
+                # upsert_chat_history will write conversational entries into chat_history
+                out_session_id = upsert_chat_history(user_id, session_id, final_session_name, userprompt, response)
+
+                # Also, since this is a small-doc path where the full structured response is available,
+                # persist the full structured learning content into study_material_history for the session.
+                if isinstance(response, dict) and out_session_id:
                     try:
-                        existing = client.table('learning_history').select('*').eq('session_id', session_id).execute()
-                        if existing.data and len(existing.data) > 0:
+                        from app.db.db_client import get_supabase_client as _get_supabase_client
+                        client = _get_supabase_client()
+                        existing = client.table('chat_history').select('*').eq('session_id', out_session_id).execute()
+                        if existing and getattr(existing, 'data', None) and len(existing.data) > 0:
                             rec = existing.data[0]
-                            history = rec.get('llm_response_history') or []
-                            history.append(response)
-                            update_obj = {
-                                'llm_response_history': history,
-                                'session_name': session_name or rec.get('session_name'),
-                                'updated_at': now_iso
-                            }
-                            client.table('learning_history').update(update_obj).eq('session_id', session_id).execute()
-                            created_session_id = session_id
-                            logger.info('Appended to learning_history session_id=%s student=%s', session_id, user_id)
-                        else:
-                            # Insert new row with provided session_id
-                            row = {
-                                'session_id': session_id,
-                                'student_id': user_id,
-                                'session_name': session_name,
-                                'llm_response_history': [response],
-                                'created_at': now_iso,
-                                'updated_at': now_iso
-                            }
-                            client.table('learning_history').insert(row).execute()
-                            created_session_id = session_id
-                            logger.info('Inserted new learning_history row with session_id=%s', session_id)
-                    except Exception as e:
-                        logger.error('Failed to upsert learning_history for session_id=%s: %s', session_id, e)
-                else:
-                    # No session_id provided - create a new session_id and insert
-                    try:
-                        new_session_id = str(uuid.uuid4())
-                        row = {
-                            'session_id': new_session_id,
-                            'student_id': user_id,
-                            'session_name': session_name,
-                            'llm_response_history': [response],
-                            'created_at': now_iso,
-                            'updated_at': now_iso
-                        }
-                        client.table('learning_history').insert(row).execute()
-                        created_session_id = new_session_id
-                        logger.info('Inserted new learning_history row for student=%s session_id=%s', user_id, new_session_id)
-                    except Exception as e:
-                        logger.error('Failed to insert learning_history: %s', e)
+                            materials = rec.get('study_material_history') or []
+                            materials.append(response)
+                            now_iso_small = datetime.now().isoformat()
+                            client.table('chat_history').update({'study_material_history': materials, 'updated_at': now_iso_small}).eq('session_id', out_session_id).execute()
+                    except Exception:
+                        logger.debug('Failed to persist study_material_history for small-doc path')
             except Exception as e:
-                logger.debug('Skipping persistence to learning_history due to error: %s', e)
-
-            out_session_id = created_session_id or session_id
+                logger.debug('Skipping persistence to chat_history due to error: %s', e)
 
             # Also persist metadata (subject/chapter/concept) for small-doc path
             try:
@@ -938,8 +899,9 @@ async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, te
         logger.info(f"Content types count: {content_types_count}")
         response = await generate_structured_response(formatted_context, userprompt, provider_name, model_name, user_api_key, content_type)
         # Ensure we always return a dict
-        # Persist the LLM response into learning_history for session/history tracking
-        # Table schema: learning_history (id PK), session_id UUID, student_id, session_name, llm_response_history (JSONB), created_at, updated_at
+    # Persist the LLM response into chat_history for session/history tracking
+    # Table schema: chat_history (id PK), session_id UUID, student_id, session_name,
+    # llm_response_history (JSONB), study_material_history (JSONB), created_at, updated_at
         created_session_id = None
         try:
             from app.db.db_client import get_supabase_client
@@ -964,56 +926,76 @@ async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, te
 
             now_iso = datetime.now().isoformat()
 
-            # If session_id is supplied, try to append to llm_response_history for that session_id
-            if session_id:
-                try:
-                    existing = client.table('learning_history').select('*').eq('session_id', session_id).execute()
-                    if existing.data and len(existing.data) > 0:
+            # Append a user+assistant pair to chat_history so sessions have conversational memory
+            try:
+                user_entry = {'role': 'user', 'content': userprompt, 'timestamp': now_iso}
+                assistant_content = None
+                if isinstance(response, dict):
+                    assistant_content = response.get('summary')
+                    meta = response.get('metadata')
+                    if not assistant_content and isinstance(meta, dict):
+                        assistant_content = meta.get('summary')
+                    if not assistant_content:
+                        try:
+                            assistant_content = json.dumps(response)
+                        except Exception:
+                            assistant_content = str(response)
+                else:
+                    assistant_content = response
+                assistant_entry = {'role': 'assistant', 'content': assistant_content, 'timestamp': now_iso}
+
+                if session_id:
+                    existing = client.table('chat_history').select('*').eq('session_id', session_id).execute()
+                    if existing and getattr(existing, 'data', None) and len(existing.data) > 0:
                         rec = existing.data[0]
                         history = rec.get('llm_response_history') or []
-                        history.append(response)
+                        history.append(user_entry)
+                        history.append(assistant_entry)
                         update_obj = {
                             'llm_response_history': history,
                             'session_name': session_name or rec.get('session_name'),
                             'updated_at': now_iso
                         }
-                        client.table('learning_history').update(update_obj).eq('session_id', session_id).execute()
+                        # if we have a structured response, also append to study_material_history
+                        if isinstance(response, dict):
+                            materials = rec.get('study_material_history') or []
+                            materials.append(response)
+                            update_obj['study_material_history'] = materials
+
+                        client.table('chat_history').update(update_obj).eq('session_id', session_id).execute()
                         created_session_id = session_id
-                        logger.info('Appended to learning_history session_id=%s student=%s', session_id, user_id)
+                        logger.info('Appended to chat_history session_id=%s student=%s', session_id, user_id)
                     else:
-                        # Insert new row with provided session_id
                         row = {
                             'session_id': session_id,
                             'student_id': user_id,
                             'session_name': session_name,
-                            'llm_response_history': [response],
+                            'llm_response_history': [user_entry, assistant_entry],
+                            'study_material_history': [response] if isinstance(response, dict) else [],
                             'created_at': now_iso,
                             'updated_at': now_iso
                         }
-                        client.table('learning_history').insert(row).execute()
+                        client.table('chat_history').insert(row).execute()
                         created_session_id = session_id
-                        logger.info('Inserted new learning_history row with session_id=%s', session_id)
-                except Exception as e:
-                    logger.error('Failed to upsert learning_history for session_id=%s: %s', session_id, e)
-            else:
-                # No session_id provided - create a new session_id and insert
-                try:
+                        logger.info('Inserted new chat_history row with session_id=%s', session_id)
+                else:
                     new_session_id = str(uuid.uuid4())
                     row = {
                         'session_id': new_session_id,
                         'student_id': user_id,
                         'session_name': session_name,
-                        'llm_response_history': [response],
+                        'llm_response_history': [user_entry, assistant_entry],
+                        'study_material_history': [response] if isinstance(response, dict) else [],
                         'created_at': now_iso,
                         'updated_at': now_iso
                     }
-                    client.table('learning_history').insert(row).execute()
+                    client.table('chat_history').insert(row).execute()
                     created_session_id = new_session_id
-                    logger.info('Inserted new learning_history row for student=%s session_id=%s', user_id, new_session_id)
-                except Exception as e:
-                    logger.error('Failed to insert learning_history: %s', e)
+                    logger.info('Inserted new chat_history row for student=%s session_id=%s', user_id, new_session_id)
+            except Exception as e:
+                logger.error('Failed to upsert chat_history for session: %s', e)
         except Exception as e:
-            logger.debug('Skipping persistence to learning_history due to error: %s', e)
+            logger.debug('Skipping persistence to chat_history due to error: %s', e)
 
         # Persist extracted metadata (subject -> chapter -> concept) into DB so frontend can render
         try:
