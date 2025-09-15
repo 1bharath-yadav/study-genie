@@ -3,7 +3,7 @@ uvicorn[standard]>=0.24.0
 click>=8.0.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
-python-multipart
+python-multipart>=0.0.5
 python-dotenv>=1.0.0
 httpx
 aiohttp
@@ -25,6 +25,7 @@ websockets>=12.0
 langchain>=0.0.350
 langchain-community>=0.0.10
 langchain-google-genai>=0.0.5
+langchain[google-genai]
 google-generativeai>=0.8.5
 pypdf>=6.0.0
 faiss-cpu>=1.12.0
@@ -34,7 +35,6 @@ anyio>=3.0.0
 sniffio>=1.1.0
 h11>=0.8
 watchfiles>=0.13
-python-multipart>=0.0.5
 unstructured>=0.18.14
 pillow>=11.3.0
 langchain-cohere>=0.4.6
@@ -51,3 +51,7 @@ nbformat>=5.10.4
 whisper>=1.1.10
 pandas>=2.3.2
 email-validator>=2.3.0
+pytest>=8.4.1
+pytest-asyncio
+pydantic-ai>=1.0.3
+jwt>=1.4.0
