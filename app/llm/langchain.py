@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import AsyncGenerator, List, Dict, Any, Tuple
 from pathlib import Path
 from datetime import datetime
 
@@ -11,6 +11,7 @@ import mimetypes
 import json
 import os
 import tarfile
+import uuid
 import zipfile
 from typing import Iterable
 # Direct Google Generative AI client
@@ -31,7 +32,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
 from dotenv import load_dotenv
-from pydantic_ai import StructuredDict
+# StructuredDict is imported locally where needed to avoid optional dependency errors
 
 from app.llm.types import LEARNING_CONTENT_SCHEMA
 
@@ -406,6 +407,12 @@ async def load_documents_from_files(file_paths: List[str], temp_dir: str, api_ke
     temp.mkdir(parents=True, exist_ok=True)
 
     in_paths = [Path(p) for p in file_paths if Path(p).exists()]
+    logger.info(f'Loading documents from files: {in_paths}')
+    for p in in_paths:
+        try:
+            logger.debug(f'File exists: {p} size={p.stat().st_size}')
+        except Exception as e:
+            logger.debug(f'Could not stat file {p}: {e}')
     # expand archives into temp_dir
     expanded_lists = await asyncio.gather(*[asyncio.to_thread(_expand_archive, p, temp) if _is_archive(p) else asyncio.to_thread(lambda x: [x], p) for p in in_paths])
     worklist = _flatten(expanded_lists)
@@ -418,10 +425,17 @@ async def load_documents_from_files(file_paths: List[str], temp_dir: str, api_ke
             ordered.append(p)
 
     # process concurrently (pass api_key/provider/model to file processor)
-    texts = await asyncio.gather(*[_file_to_text(p, api_key, provider_name, model_name) for p in ordered])
+    results = await asyncio.gather(*[_file_to_text(p, api_key, provider_name, model_name) for p in ordered], return_exceptions=True)
+    texts: List[str] = []
+    for p, r in zip(ordered, results):
+        if isinstance(r, Exception):
+            logger.exception(f'Failed to extract text from file {p}: {r}')
+            texts.append(f"(error reading file: {r})")
+        else:
+            texts.append(str(r))
 
     # format
-    parts = [_fmt(p.name, t if t.strip() else "(no extractable text)") for p, t in zip(ordered, texts)]
+    parts = [_fmt(p.name, t if isinstance(t, str) and t.strip() else "(no extractable text)") for p, t in zip(ordered, texts)]
     return parts
 
 
@@ -593,6 +607,8 @@ USER QUERY:
 
 CONTENT TYPE REQUESTED: {ct}
 
+Respect user query generate content on the basis of what he asked.
+
 Please extract the following information and generate study materials:
 1. Automatically identify the subject, chapter, and concept from the content
 2. Set the content_type field to: "{ct}"
@@ -607,502 +623,754 @@ IMPORTANT SCHEMA REQUIREMENTS:
 
 Focus on creating high-quality educational content that helps with active learning and retention.
 
-Return the response as JSON conforming to the LearningContent Pydantic model.
 """.strip()
 
 
 # ----- Main function -----
 
-async def generate_structured_response(
+"""
+Refactored RAG pipeline with streaming responses and functional programming principles
+"""
+
+
+logger = logging.getLogger(__name__)
+
+
+# ----- Pure Functions -----
+"""
+Refactored RAG pipeline with streaming responses and functional programming principles
+"""
+# ----- Pure Functions -----
+
+
+def should_skip_embedding(combined_text: str, threshold: int = 1300) -> bool:
+    """Pure function to determine if embedding should be skipped."""
+    return len(combined_text.split()) < threshold
+
+
+
+
+
+def create_session_name(metadata: Dict[str, Any]) -> Optional[str]:
+    """Pure function to create session name from metadata."""
+    if not isinstance(metadata, dict):
+        return None
+        
+    subject = (metadata.get('subject_name') or metadata.get('subject') or '').strip()
+    chapter = (metadata.get('chapter_name') or metadata.get('chapter') or '').strip()
+    concept = (metadata.get('concept_name') or metadata.get('concept') or '').strip()
+    
+    if subject and chapter and concept:
+        return f"{subject}-{chapter}-{concept}"
+    elif subject and concept:
+        return f"{subject}-{concept}"
+    elif subject:
+        return subject
+    elif concept:
+        return concept
+    
+    return None
+
+
+# ----- Streaming Functions -----
+
+async def generate_streaming_response(
     context: str,
     query: str,
     provider: str,
     model_name: str,
     api_key: str,
-    content_type: str = "all",
-):
+    content_type: str = "all"
+) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    Generate structured learning content using a PydanticAI Agent with output_type=LearningContent.
+    Generate streaming structured learning content using PydanticAI.
+    Yields partial responses as they're generated.
     """
     if not api_key or not api_key.strip():
-        raise ValueError("API key is required for the provider agent.")
-
-    # Decide content type and build prompt (pure functions)
-    final_ct = detect_content_type(query, content_type)
-    prompt = build_prompt(context, query, final_ct,)
-
-    logger.info("Creating learning agent for provider=%s model=%s", provider, model_name)
+        yield {
+            'status': 'error',
+            'error': 'API key is required for the provider agent.',
+            'error_type': 'missing_api_key'
+        }
+        return
 
     try:
+      
+        from pydantic_ai import StructuredDict
+        
+        # Build components
+        final_content_type = detect_content_type(query, content_type)
+        prompt = build_prompt(context, query, final_content_type)
+        
+        logger.info(f"Creating learning agent for provider={provider} model={model_name}")
         agent = create_learning_agent(provider, model_name, api_key)
+        
+        def _to_primitive(obj):
+            """Convert model response objects into JSON-serializable primitives."""
+            try:
+                if obj is None:
+                    return None
+                if isinstance(obj, (str, int, float, bool)):
+                    return obj
+                if isinstance(obj, (list, dict)):
+                    return obj
+                # Pydantic / dataclass style
+                if hasattr(obj, 'dict') and callable(getattr(obj, 'dict')):
+                    try:
+                        return obj.dict()
+                    except Exception:
+                        pass
+                if hasattr(obj, 'to_dict') and callable(getattr(obj, 'to_dict')):
+                    try:
+                        return obj.to_dict()
+                    except Exception:
+                        pass
+                if hasattr(obj, 'model_dump') and callable(getattr(obj, 'model_dump')):
+                    try:
+                        return obj.model_dump()
+                    except Exception:
+                        pass
+                if hasattr(obj, 'json') and callable(getattr(obj, 'json')):
+                    try:
+                        import json as _json
+                        return _json.loads(obj.json())
+                    except Exception:
+                        pass
+                # Fallback to string
+                return str(obj)
+            except Exception:
+                return str(obj)
+
+        # Use streaming run
+        async with agent.run_stream(
+            prompt,
+            output_type=StructuredDict(LEARNING_CONTENT_SCHEMA)
+        ) as result:
+            async for partial_response in result.stream_responses():
+                ser = _to_primitive(partial_response)
+                # Derive a short text delta if possible to help frontend incremental rendering
+
+                logger.info("LLM stream partial (serialized): %s", repr(ser))
+                yield {
+                    'status': 'streaming',
+                    'data': ser,
+                    'is_final': False
+                }
+
+            # Final response
+            final_output = await result.get_output()
+            final_ser = _to_primitive(final_output)
+            # For final payload, include a textual fallback as well
+            final_text = None
+            try:
+                if isinstance(final_ser, str):
+                    final_text = final_ser
+                elif isinstance(final_ser, dict):
+                    final_text = final_ser.get('summary') or final_ser.get('metadata', {}).get('summary') or None
+                    if final_text is None:
+                        import json as _json
+                        try:
+                            final_text = _json.dumps(final_ser)
+                        except Exception:
+                            final_text = str(final_ser)
+            except Exception:
+                final_text = str(final_ser)
+
+            logger.info("LLM stream final (serialized): %s", repr(final_ser))
+
+
+            # Finally emit the complete object
+            yield {
+                'status': 'complete',
+                'data': final_ser,
+                'is_final': True
+            }
+            
     except Exception as e:
-        logger.error("Failed to create learning agent: %s", e)
-        raise ValueError(f"Failed to initialize model/provider: {e}")
-
-    # Correct PydanticAI call — no invoke/ainvoke
-    logger.info(f"model_prompt{prompt}")
-    lc = await agent.run(prompt, output_type=StructuredDict(LEARNING_CONTENT_SCHEMA))
-
-    llm_response = lc.output 
-
- 
-    logger.info(f"llm_response{llm_response}")
-
-    return llm_response                                       
-
-
-
-# Streaming support removed: the codebase now exposes only the non-streaming
-# `get_llm_response` function which performs ingestion, chunking, embeddings and
-# calls the model synchronously (returning a final structured JSON-compatible dict).
+        logger.exception(f"LLM provider error in generate_streaming_response: {e}")
+        error_msg = str(e).lower()
+        suggestion = None
+        
+        if any(term in error_msg for term in ['token', 'exhaust', 'context']):
+            suggestion = 'Consider switching to a model with a larger context window or using a different provider.'
+        
+        yield {
+            'status': 'error',
+            'error': str(e),
+            'error_type': 'llm_error',
+            'suggestion': suggestion,
+            'is_final': True
+        }
 
 
-async def get_llm_response(uploaded_files_paths: List[Path], userprompt: str, temp_dir: str, user_api_key: str, user_id: str, provider_name: str, model_name: str, session_id: str | None = None, session_name: str | None = None) -> Dict[str, Any]:
+# ----- Additional Database Helper Functions -----
+
+async def upsert_learning_session_service(
+    user_id: str,
+    session_id: Optional[str],
+    session_name: Optional[str],
+    user_prompt: str,
+    assistant_response: Dict[str, Any]
+) -> Optional[str]:
     """
-    Complete RAG pipeline for generating structured learning content
+    Service layer function that mirrors the original upsert_chat_history from learning_history_service.
+    Provides the same interface as the original service.
     """
     try:
-        # Validate that user has provided API key
-        if not user_api_key:
-            return {
-                "status": "error",
-                "error": "API key is required. Please add your Gemini API key in settings to continue.",
-                "error_type": "missing_api_key"
-            }
+        from app.services.learning_history_service import upsert_chat_history
+        return upsert_chat_history(user_id, session_id, session_name, user_prompt, assistant_response)
+    except ImportError:
+        # Fallback to our implementation if service doesn't exist
+        logger.warning("learning_history_service not available, using built-in implementation")
+        return await persist_chat_history(user_id, session_id, session_name, user_prompt, assistant_response)
+    except Exception as e:
+        logger.error(f"Error in upsert_learning_session_service: {e}")
+        return await persist_chat_history(user_id, session_id, session_name, user_prompt, assistant_response)
 
-        logger.info("Starting enhanced RAG pipeline...")
 
-        # Step 1: Load documents from files
-        logger.info("Loading documents from uploaded files...")
-        documents = await load_documents_from_files([str(p) for p in uploaded_files_paths], temp_dir,user_api_key,provider_name,model_name)
-        #  if no of (tokens words) is less than 1300 skip embedding send direct to llm
-        # Auto-detect content type from user prompt early so both paths can use it
-        content_type = detect_content_type(userprompt, "all")
-
-        # If the uploaded documents are small (few words/tokens), skip embedding/retrieval
-        # and send the combined text directly to the LLM. This avoids unnecessary embedding
-        # calls for short inputs. Heuristic: use word count as a proxy for tokens.
-        combined_text = "\n\n".join(documents)
-        word_count = len(combined_text.split())
-        if word_count < 1300:
-            logger.info("Document small (words=%d) — skipping embedding/retrieval and sending direct to LLM", word_count)
-            formatted_context = combined_text
-
-            # Generate structured response directly without vector store
-            response = await generate_structured_response(formatted_context, userprompt, provider_name, model_name, user_api_key, content_type)
-
-            # Persist the LLM response into chat_history via service helper
-            out_session_id = None
-            try:
-                from app.services.learning_history_service import upsert_chat_history
-
-                # Build a guaranteed session name from LLM metadata: Subject | Chapter | Concept
-                # This ensures the session_name is never optional and is consistent across writes.
-                composed_session_name = None
-                try:
-                    if isinstance(response, dict):
-                        meta = response.get('metadata') or {}
-                        subject_name = (meta.get('subject_name') or meta.get('subject') or '').strip()
-                        chapter_name = (meta.get('chapter_name') or meta.get('chapter') or '').strip()
-                        concept_name = (meta.get('concept_name') or meta.get('concept') or '').strip()
-
-                        composed_session_name = f"{subject_name}-{chapter_name}-{concept_name}"
-                except Exception:
-                    composed_session_name = None
-
-                # prefer an explicit composed name, then caller-provided session_name, then fallback
-                final_session_name = composed_session_name or session_name or f"Uncategorized | {datetime.now().date()}"
-
-                # upsert_chat_history will write conversational entries into chat_history
-                out_session_id = upsert_chat_history(user_id, session_id, final_session_name, userprompt, response)
-
-                # Also, since this is a small-doc path where the full structured response is available,
-                # persist the full structured learning content into study_material_history for the session.
-                if isinstance(response, dict) and out_session_id:
-                    try:
-                        from app.db.db_client import get_supabase_client as _get_supabase_client
-                        client = _get_supabase_client()
-                        existing = client.table('chat_history').select('*').eq('session_id', out_session_id).execute()
-                        if existing and getattr(existing, 'data', None) and len(existing.data) > 0:
-                            rec = existing.data[0]
-                            materials = rec.get('study_material_history') or []
-                            materials.append(response)
-                            now_iso_small = datetime.now().isoformat()
-                            client.table('chat_history').update({'study_material_history': materials, 'updated_at': now_iso_small}).eq('session_id', out_session_id).execute()
-                    except Exception:
-                        logger.debug('Failed to persist study_material_history for small-doc path')
-            except Exception as e:
-                logger.debug('Skipping persistence to chat_history due to error: %s', e)
-
-            # Also persist metadata (subject/chapter/concept) for small-doc path
-            try:
-                if isinstance(response, dict):
-                    from app.db.db_client import get_supabase_client as _get_supabase_client
-
-                    meta = response.get('metadata') or {}
-                    subject_name = meta.get('subject_name')
-                    chapter_name = meta.get('chapter_name')
-                    concept_name = meta.get('concept_name')
-                    difficulty = meta.get('difficulty_level') or meta.get('difficulty')
-
-                    now_iso_local = datetime.now().isoformat()
-
-                    if subject_name:
-                        client = _get_supabase_client()
-
-                        existing = client.table('subjects').select('*').eq('student_id', user_id).eq('llm_suggested_subject_name', subject_name).execute()
-                        subject_id_val = None
-                        if existing and getattr(existing, 'data', None):
-                            rows = existing.data if isinstance(existing.data, list) else [existing.data]
-                            if len(rows) > 0:
-                                subject_id_val = rows[0].get('subject_id')
-                        if not subject_id_val:
-                            ins = {
-                                'student_id': user_id,
-                                'llm_suggested_subject_name': subject_name,
-                                'created_at': now_iso_local,
-                                'updated_at': now_iso_local
-                            }
-                            resp = client.table('subjects').insert(ins).execute()
-                            if resp and getattr(resp, 'data', None):
-                                inserted = resp.data[0] if isinstance(resp.data, list) else resp.data
-                                subject_id_val = inserted.get('subject_id')
-
-                        chapter_id_val = None
-                        if subject_id_val and chapter_name:
-                            existing = client.table('chapters').select('*').eq('student_id', user_id).eq('subject_id', subject_id_val).eq('llm_suggested_chapter_name', chapter_name).execute()
-                            if existing and getattr(existing, 'data', None):
-                                rows = existing.data if isinstance(existing.data, list) else [existing.data]
-                                if len(rows) > 0:
-                                    chapter_id_val = rows[0].get('chapter_id')
-                            if not chapter_id_val:
-                                ins = {
-                                    'student_id': user_id,
-                                    'subject_id': subject_id_val,
-                                    'llm_suggested_chapter_name': chapter_name,
-                                    'chapter_order': 0,
-                                    'description': None,
-                                    'created_at': now_iso_local,
-                                    'updated_at': now_iso_local
-                                }
-                                resp = client.table('chapters').insert(ins).execute()
-                                if resp and getattr(resp, 'data', None):
-                                    inserted = resp.data[0] if isinstance(resp.data, list) else resp.data
-                                    chapter_id_val = inserted.get('chapter_id')
-
-                        if chapter_id_val and concept_name:
-                            existing = client.table('concepts').select('*').eq('student_id', user_id).eq('chapter_id', chapter_id_val).eq('llm_suggested_concept_name', concept_name).execute()
-                            if existing and getattr(existing, 'data', None):
-                                pass
-                            else:
-                                ins = {
-                                    'student_id': user_id,
-                                    'chapter_id': chapter_id_val,
-                                    'llm_suggested_concept_name': concept_name,
-                                    'concept_order': 0,
-                                    'description': None,
-                                    'difficulty_level': difficulty or 'Medium',
-                                    'created_at': now_iso_local,
-                                    'updated_at': now_iso_local
-                                }
-                                resp = client.table('concepts').insert(ins).execute()
-            except Exception as e:
-                logger.error('Failed to persist small-doc LLM metadata: %s', e)
-
-            return {
-                'session_id': out_session_id,
-                'llm_response': response
-            } if isinstance(response, dict) else (response or {})
-        else:
-            # Step 2: Chunk documents for processing
-            logger.info("Chunking documents for optimal processing...")
-            chunks = await perform_document_chunking(documents)
-
-        # Step 3: Determine embedding preference (per-user) and setup vector store
-        logger.info("Determining embedding model preference for user and configuring retrieval...")
+async def get_embedding_preferences(user_id: str) -> Tuple[str, str, str]:
+    """
+    Get user's embedding model preferences with proper fallback handling.
+    Returns (provider, model, api_key) tuple.
+    """
+    embedding_provider = None
+    embedding_model = None
+    embedding_api_key = None
+    
+    try:
         from app.llm.providers import get_user_model_preferences
         from app.services.api_key_service import get_api_key_for_provider
-
-        embedding_provider = provider_name
-        embedding_model = model_name
-        # Try to find an explicit embedding preference
-        try:
-            prefs = get_user_model_preferences(user_id)
-            emb_pref = None
-            for p in prefs:
-                if p and p.get("use_for_embedding"):
-                    emb_pref = p
-                    break
-            if emb_pref:
-                mid = emb_pref.get("model_id")
-                prov = emb_pref.get("provider_name") or None
-                if mid and "-" in mid:
-                    parts = mid.split("-", 1)
-                    embedding_provider = prov or parts[0]
+        
+        prefs = get_user_model_preferences(user_id)
+        for p in prefs:
+            if p and p.get("use_for_embedding"):
+                model_id = p.get("model_id")
+                provider_name = p.get("provider_name")
+                
+                if model_id and "-" in model_id:
+                    parts = model_id.split("-", 1)
+                    embedding_provider = provider_name or parts[0]
                     embedding_model = parts[1]
                 else:
-                    # fallback to provided provider_name if available
-                    embedding_provider = prov or embedding_provider
-                    embedding_model = mid or embedding_model
-        except Exception:
-            logger.debug("Failed to read embedding preferences; falling back to chat model")
-
-        # Fetch embedding API key for the embedding provider (may be None)
-        try:
-            embedding_api_key = await get_api_key_for_provider(user_id, embedding_provider)
-        except Exception:
-            embedding_api_key = None
-
-        logger.info("Using embedding provider=%s model=%s (key present=%s)", embedding_provider, embedding_model, bool(embedding_api_key))
-        vector_store, hybrid_retriever = await setup_vector_store_and_retriever(chunks, embedding_provider, embedding_model, embedding_api_key)
-
-        # Step 4: Retrieve relevant content using hybrid search
-        logger.info(f"Retrieving relevant content for query: '{userprompt}'")
-        retrieved_docs = await hybrid_retriever.ainvoke(userprompt)
-
-        # Step 5: Enhance with surrounding context
-        enhanced_docs = await enhance_retrieved_context(retrieved_docs, chunks)
-
-        # Step 6: Format context for LLM processing
-        formatted_context = format_context_for_llm(enhanced_docs)
-
-        # Step 7: Generate structured response with user's API key
-        logger.info("Generating structured learning content...")
-
-        # Auto-detect content type from user prompt
-        content_type = "all"  # default
-        userprompt_lower = userprompt.lower()
-
-        # Check for multiple content types
-        has_flashcards = "flashcard" in userprompt_lower
-        has_quiz = "quiz" in userprompt_lower
-        has_match = "match" in userprompt_lower or "matching" in userprompt_lower
-        has_summary = "summary" in userprompt_lower
-
-        # If multiple content types are requested, use "all"
-        content_types_count = sum([has_flashcards, has_quiz, has_match])
-
-        if content_types_count > 1:
-            content_type = "all"
-        elif has_flashcards:
-            content_type = "flashcards"
-        elif has_quiz:
-            content_type = "quiz"
-        elif has_match:
-            content_type = "match_the_following"
-        elif has_summary:
-            content_type = "summary"
-
-        logger.info(
-            f"Detected content type: {content_type} (flashcards:{has_flashcards}, quiz:{has_quiz}, match:{has_match})")
-        logger.info(f"User prompt was: '{userprompt}'")
-        logger.info(f"Content types count: {content_types_count}")
-        response = await generate_structured_response(formatted_context, userprompt, provider_name, model_name, user_api_key, content_type)
-        # Ensure we always return a dict
-    # Persist the LLM response into chat_history for session/history tracking
-    # Table schema: chat_history (id PK), session_id UUID, student_id, session_name,
-    # llm_response_history (JSONB), study_material_history (JSONB), created_at, updated_at
-        created_session_id = None
-        try:
-            from app.db.db_client import get_supabase_client
-            import uuid
-
-            client = get_supabase_client()
-
-            # Determine session_name from response metadata when available when not provided
+                    embedding_provider = provider_name
+                    embedding_model = model_id
+                break
+        
+        if embedding_provider:
             try:
-                meta = response.get('metadata') if isinstance(response, dict) else None
-                subj = meta.get('subject_name') if meta else None
-                conc = meta.get('concept_name') if meta else None
-                if not session_name:
-                    if subj and conc:
-                        session_name = f"{subj} - {conc}"
-                    elif subj:
-                        session_name = subj
-                    elif conc:
-                        session_name = conc
-            except Exception:
-                pass
+                embedding_api_key = await get_api_key_for_provider(user_id, embedding_provider)
+            except Exception as e:
+                logger.debug(f"Could not get API key for embedding provider {embedding_provider}: {e}")
+                
+    except Exception as e:
+        logger.debug(f"Failed to get embedding preferences: {e}")
+    
+    return (
+        embedding_provider or "",
+        embedding_model or "",
+        embedding_api_key or ""
+    )
 
-            now_iso = datetime.now().isoformat()
-
-            # Append a user+assistant pair to chat_history so sessions have conversational memory
+async def persist_metadata(
+    user_id: str, 
+    metadata: Dict[str, Any]
+) -> Dict[str, Optional[str]]:
+    """
+    Complete metadata persistence with proper ID tracking and error handling.
+    Returns dict with created IDs for referencing.
+    """
+    try:
+        from app.db.db_client import get_supabase_client
+        
+        if not isinstance(metadata, dict):
+            return {'subject_id': None, 'chapter_id': None, 'concept_id': None}
+        
+        client = get_supabase_client()
+        now_iso = datetime.now().isoformat()
+        
+        subject_name = metadata.get('subject_name')
+        chapter_name = metadata.get('chapter_name')
+        concept_name = metadata.get('concept_name')
+        difficulty = metadata.get('difficulty_level') or metadata.get('difficulty') or 'Medium'
+        
+        subject_id = None
+        chapter_id = None
+        concept_id = None
+        
+        # Subject persistence with proper error handling
+        if subject_name:
             try:
-                user_entry = {'role': 'user', 'content': userprompt, 'timestamp': now_iso}
-                assistant_content = None
-                if isinstance(response, dict):
-                    assistant_content = response.get('summary')
-                    meta = response.get('metadata')
-                    if not assistant_content and isinstance(meta, dict):
-                        assistant_content = meta.get('summary')
-                    if not assistant_content:
-                        try:
-                            assistant_content = json.dumps(response)
-                        except Exception:
-                            assistant_content = str(response)
-                else:
-                    assistant_content = response
-                assistant_entry = {'role': 'assistant', 'content': assistant_content, 'timestamp': now_iso}
-
-                if session_id:
-                    existing = client.table('chat_history').select('*').eq('session_id', session_id).execute()
-                    if existing and getattr(existing, 'data', None) and len(existing.data) > 0:
-                        rec = existing.data[0]
-                        history = rec.get('llm_response_history') or []
-                        history.append(user_entry)
-                        history.append(assistant_entry)
-                        update_obj = {
-                            'llm_response_history': history,
-                            'session_name': session_name or rec.get('session_name'),
-                            'updated_at': now_iso
-                        }
-                        # if we have a structured response, also append to study_material_history
-                        if isinstance(response, dict):
-                            materials = rec.get('study_material_history') or []
-                            materials.append(response)
-                            update_obj['study_material_history'] = materials
-
-                        client.table('chat_history').update(update_obj).eq('session_id', session_id).execute()
-                        created_session_id = session_id
-                        logger.info('Appended to chat_history session_id=%s student=%s', session_id, user_id)
-                    else:
-                        row = {
-                            'session_id': session_id,
-                            'student_id': user_id,
-                            'session_name': session_name,
-                            'llm_response_history': [user_entry, assistant_entry],
-                            'study_material_history': [response] if isinstance(response, dict) else [],
-                            'created_at': now_iso,
-                            'updated_at': now_iso
-                        }
-                        client.table('chat_history').insert(row).execute()
-                        created_session_id = session_id
-                        logger.info('Inserted new chat_history row with session_id=%s', session_id)
-                else:
-                    new_session_id = str(uuid.uuid4())
-                    row = {
-                        'session_id': new_session_id,
+                existing = client.table('subjects').select('*').eq(
+                    'student_id', user_id
+                ).eq('llm_suggested_subject_name', subject_name).execute()
+                
+                if existing and getattr(existing, 'data', None):
+                    rows = existing.data if isinstance(existing.data, list) else [existing.data]
+                    if rows:
+                        subject_id = rows[0].get('subject_id')
+                        logger.info(f'Found existing subject id={subject_id} for user={user_id} name={subject_name}')
+                
+                if not subject_id:
+                    resp = client.table('subjects').insert({
                         'student_id': user_id,
-                        'session_name': session_name,
-                        'llm_response_history': [user_entry, assistant_entry],
-                        'study_material_history': [response] if isinstance(response, dict) else [],
+                        'llm_suggested_subject_name': subject_name,
                         'created_at': now_iso,
                         'updated_at': now_iso
-                    }
-                    client.table('chat_history').insert(row).execute()
-                    created_session_id = new_session_id
-                    logger.info('Inserted new chat_history row for student=%s session_id=%s', user_id, new_session_id)
+                    }).execute()
+                    
+                    if resp and getattr(resp, 'data', None):
+                        inserted = resp.data[0] if isinstance(resp.data, list) else resp.data
+                        subject_id = inserted.get('subject_id')
+                        logger.info(f'Created subject id={subject_id} for user={user_id} name={subject_name}')
             except Exception as e:
-                logger.error('Failed to upsert chat_history for session: %s', e)
-        except Exception as e:
-            logger.debug('Skipping persistence to chat_history due to error: %s', e)
+                logger.error(f'Failed to persist subject: {e}')
+        
+        # Chapter persistence with proper error handling
+        if subject_id and chapter_name:
+            try:
+                existing = client.table('chapters').select('*').eq(
+                    'student_id', user_id
+                ).eq('subject_id', subject_id).eq(
+                    'llm_suggested_chapter_name', chapter_name
+                ).execute()
 
-        # Persist extracted metadata (subject -> chapter -> concept) into DB so frontend can render
-        try:
-            # Only persist when response is a dict and contains metadata
-            if isinstance(response, dict):
-                # local imports to avoid top-level dependency in module import time
-                from app.db.db_client import get_supabase_client as _get_supabase_client
+                if existing and getattr(existing, 'data', None):
+                    rows = existing.data if isinstance(existing.data, list) else [existing.data]
+                    if rows:
+                        chapter_id = rows[0].get('chapter_id')
+                        logger.info(f'Found existing chapter id={chapter_id} for subject_id={subject_id} name={chapter_name}')
 
-                meta = response.get('metadata') or {}
-                subject_name = meta.get('subject_name')
-                chapter_name = meta.get('chapter_name')
-                concept_name = meta.get('concept_name')
-                difficulty = meta.get('difficulty_level') or meta.get('difficulty')
+                if not chapter_id:
+                    # Determine safe chapter_order to avoid unique constraint collisions
+                    try:
+                        top = client.table('chapters').select('chapter_order').eq('subject_id', subject_id).order('chapter_order', desc=True).limit(1).execute()
+                        max_order = None
+                        if top and getattr(top, 'data', None):
+                            top_rows = top.data if isinstance(top.data, list) else [top.data]
+                            if top_rows and isinstance(top_rows[0], dict):
+                                max_order = top_rows[0].get('chapter_order')
+                        new_order = (max_order + 1) if isinstance(max_order, int) else 0
+                    except Exception:
+                        new_order = 0
 
-                now_iso_local = datetime.now().isoformat()
-
-                if subject_name:
-                    client = _get_supabase_client()
-
-                    # Try to find existing subject for this student
-                    existing = client.table('subjects').select('*').eq('student_id', user_id).eq('llm_suggested_subject_name', subject_name).execute()
-                    subject_id_val = None
-                    if existing and getattr(existing, 'data', None):
-                        rows = existing.data if isinstance(existing.data, list) else [existing.data]
-                        if len(rows) > 0:
-                            subject_id_val = rows[0].get('subject_id')
-                            logger.info('Found existing subject id=%s for student=%s name=%s', subject_id_val, user_id, subject_name)
-                    if not subject_id_val:
-                        ins = {
+                    try:
+                        resp = client.table('chapters').insert({
                             'student_id': user_id,
-                            'llm_suggested_subject_name': subject_name,
-                            'created_at': now_iso_local,
-                            'updated_at': now_iso_local
-                        }
-                        resp = client.table('subjects').insert(ins).execute()
+                            'subject_id': subject_id,
+                            'llm_suggested_chapter_name': chapter_name,
+                            'chapter_order': new_order,
+                            'description': None,
+                            'created_at': now_iso,
+                            'updated_at': now_iso
+                        }).execute()
+
                         if resp and getattr(resp, 'data', None):
                             inserted = resp.data[0] if isinstance(resp.data, list) else resp.data
-                            subject_id_val = inserted.get('subject_id')
-                            logger.info('Inserted subject id=%s for student=%s name=%s', subject_id_val, user_id, subject_name)
+                            chapter_id = inserted.get('chapter_id')
+                            logger.info(f'Created chapter id={chapter_id} for subject_id={subject_id} name={chapter_name} order={new_order}')
+                    except Exception as insert_exc:
+                        logger.warning(f"Chapter insert failed, attempting to recover: {insert_exc}")
+                        try:
+                            recheck = client.table('chapters').select('*').eq('student_id', user_id).eq('subject_id', subject_id).eq('llm_suggested_chapter_name', chapter_name).execute()
+                            if recheck and getattr(recheck, 'data', None):
+                                rows = recheck.data if isinstance(recheck.data, list) else [recheck.data]
+                                if rows:
+                                    chapter_id = rows[0].get('chapter_id')
+                                    logger.info(f'Recovered existing chapter id={chapter_id} after insert conflict for subject_id={subject_id} name={chapter_name}')
+                        except Exception as re_exc:
+                            logger.error(f'Failed to persist chapter after retry: {re_exc}')
+            except Exception as e:
+                logger.error(f'Failed to persist chapter: {e}')
+        
+        # Concept persistence with proper error handling
+        if chapter_id and concept_name:
+            try:
+                existing = client.table('concepts').select('*').eq(
+                    'student_id', user_id
+                ).eq('chapter_id', chapter_id).eq(
+                    'llm_suggested_concept_name', concept_name
+                ).execute()
 
-                    # Chapters
-                    chapter_id_val = None
-                    if subject_id_val and chapter_name:
-                        existing = client.table('chapters').select('*').eq('student_id', user_id).eq('subject_id', subject_id_val).eq('llm_suggested_chapter_name', chapter_name).execute()
-                        if existing and getattr(existing, 'data', None):
-                            rows = existing.data if isinstance(existing.data, list) else [existing.data]
-                            if len(rows) > 0:
-                                chapter_id_val = rows[0].get('chapter_id')
-                                logger.info('Found existing chapter id=%s for subject_id=%s name=%s', chapter_id_val, subject_id_val, chapter_name)
-                        if not chapter_id_val:
-                            ins = {
-                                'student_id': user_id,
-                                'subject_id': subject_id_val,
-                                'llm_suggested_chapter_name': chapter_name,
-                                'chapter_order': 0,
-                                'description': None,
-                                'created_at': now_iso_local,
-                                'updated_at': now_iso_local
-                            }
-                            resp = client.table('chapters').insert(ins).execute()
-                            if resp and getattr(resp, 'data', None):
-                                inserted = resp.data[0] if isinstance(resp.data, list) else resp.data
-                                chapter_id_val = inserted.get('chapter_id')
-                                logger.info('Inserted chapter id=%s for subject_id=%s name=%s', chapter_id_val, subject_id_val, chapter_name)
+                if existing and getattr(existing, 'data', None):
+                    rows = existing.data if isinstance(existing.data, list) else [existing.data]
+                    if rows:
+                        concept_id = rows[0].get('concept_id')
+                        logger.info(f'Found existing concept id={concept_id} for chapter_id={chapter_id} name={concept_name}')
+                else:
+                    # Determine a safe concept_order to avoid unique constraint collisions
+                    try:
+                        top = client.table('concepts').select('concept_order').eq('chapter_id', chapter_id).order('concept_order', desc=True).limit(1).execute()
+                        max_order = None
+                        if top and getattr(top, 'data', None):
+                            top_rows = top.data if isinstance(top.data, list) else [top.data]
+                            if top_rows and isinstance(top_rows[0], dict):
+                                max_order = top_rows[0].get('concept_order')
+                        new_order = (max_order + 1) if isinstance(max_order, int) else 0
+                    except Exception:
+                        new_order = 0
 
-                    # Concepts
-                    if chapter_id_val and concept_name:
-                        existing = client.table('concepts').select('*').eq('student_id', user_id).eq('chapter_id', chapter_id_val).eq('llm_suggested_concept_name', concept_name).execute()
-                        if existing and getattr(existing, 'data', None):
-                            rows = existing.data if isinstance(existing.data, list) else [existing.data]
-                            if len(rows) > 0:
-                                logger.info('Found existing concept for chapter_id=%s name=%s', chapter_id_val, concept_name)
-                        else:
-                            ins = {
-                                'student_id': user_id,
-                                'chapter_id': chapter_id_val,
-                                'llm_suggested_concept_name': concept_name,
-                                'concept_order': 0,
-                                'description': None,
-                                'difficulty_level': difficulty or 'Medium',
-                                'created_at': now_iso_local,
-                                'updated_at': now_iso_local
-                            }
-                            resp = client.table('concepts').insert(ins).execute()
-                            if resp and getattr(resp, 'data', None):
-                                logger.info('Inserted concept for chapter_id=%s name=%s', chapter_id_val, concept_name)
-        except Exception as e:
-            logger.error('Failed to persist LLM metadata (subjects/chapters/concepts): %s', e)
+                    # Try insert; if a unique constraint race occurs, attempt to recover by re-querying
+                    try:
+                        resp = client.table('concepts').insert({
+                            'student_id': user_id,
+                            'chapter_id': chapter_id,
+                            'llm_suggested_concept_name': concept_name,
+                            'concept_order': new_order,
+                            'description': None,
+                            'difficulty_level': difficulty,
+                            'created_at': now_iso,
+                            'updated_at': now_iso
+                        }).execute()
 
-        # Return the generated response along with the session_id used/created so clients can persist it
-        out_session_id = created_session_id or session_id
-
+                        if resp and getattr(resp, 'data', None):
+                            inserted = resp.data[0] if isinstance(resp.data, list) else resp.data
+                            concept_id = inserted.get('concept_id')
+                            logger.info(f'Created concept id={concept_id} for chapter_id={chapter_id} name={concept_name} order={new_order}')
+                    except Exception as insert_exc:
+                        # handle duplicate key race: try to fetch the existing row again
+                        logger.warning(f"Concept insert failed, attempting to recover: {insert_exc}")
+                        try:
+                            recheck = client.table('concepts').select('*').eq('student_id', user_id).eq('chapter_id', chapter_id).eq('llm_suggested_concept_name', concept_name).execute()
+                            if recheck and getattr(recheck, 'data', None):
+                                rows = recheck.data if isinstance(recheck.data, list) else [recheck.data]
+                                if rows:
+                                    concept_id = rows[0].get('concept_id')
+                                    logger.info(f'Recovered existing concept id={concept_id} after insert conflict for chapter_id={chapter_id} name={concept_name}')
+                                    
+                        except Exception as re_exc:
+                            logger.error(f'Failed to persist concept after retry: {re_exc}')
+            except Exception as e:
+                logger.error(f'Failed to persist concept: {e}')
+        
         return {
-            'session_id': out_session_id,
-            'llm_response': response
-        } if isinstance(response, dict) else (response or {})
+            'subject_id': subject_id,
+            'chapter_id': chapter_id, 
+            'concept_id': concept_id
+        }
+        
+    except Exception as e:
+        logger.error(f'Failed to persist metadata: {e}')
+        return {'subject_id': None, 'chapter_id': None, 'concept_id': None}
+
+
+async def persist_chat_history(
+    user_id: str,
+    session_id: Optional[str],
+    session_name: Optional[str],
+    user_prompt: str,
+    assistant_response: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Complete chat history and session management with all database operations.
+    Returns session_id (existing or newly created).
+    """
+    try:
+        from app.db.db_client import get_supabase_client
+        
+        client = get_supabase_client()
+        now_iso = datetime.now().isoformat()
+        
+        # Create conversation entries
+        user_entry = {
+            'role': 'user', 
+            'content': user_prompt, 
+            'timestamp': now_iso
+        }
+        
+        assistant_content = (
+            assistant_response.get('summary') or 
+            assistant_response.get('metadata', {}).get('summary') or
+            json.dumps(assistant_response) if isinstance(assistant_response, dict) else str(assistant_response)
+        )
+        
+        assistant_entry = {
+            'role': 'assistant',
+            'content': assistant_content,
+            'timestamp': now_iso
+        }
+        
+        # Handle existing session update
+        if session_id:
+            existing = client.table('chat_history').select('*').eq(
+                'session_id', session_id
+            ).execute()
+            
+            if existing and existing.data:
+                record = existing.data[0]
+                
+                # Handle llm_response_history properly
+                history = record.get('llm_response_history') or []
+                if isinstance(history, str):
+                    try:
+                        history = json.loads(history)
+                        history = history if isinstance(history, list) else [history]
+                    except Exception:
+                        history = [history]
+                elif not isinstance(history, list):
+                    history = [] if history is None else [history]
+                
+                history.extend([user_entry, assistant_entry])
+                
+                # Handle study_material_history properly
+                materials = record.get('study_material_history') or []
+                if isinstance(materials, str):
+                    try:
+                        materials = json.loads(materials)
+                        materials = materials if isinstance(materials, list) else [materials]
+                    except Exception:
+                        materials = [materials]
+                elif not isinstance(materials, list):
+                    materials = [] if materials is None else [materials]
+                
+                if isinstance(assistant_response, dict):
+                    materials.append(assistant_response)
+                
+                # Update with complete data
+                update_data = {
+                    'llm_response_history': history,
+                    'study_material_history': materials,
+                    'session_name': session_name or record.get('session_name'),
+                    'updated_at': now_iso
+                }
+                
+                client.table('chat_history').update(update_data).eq('session_id', session_id).execute()
+                logger.info(f'Updated chat_history for session_id={session_id} user={user_id}')
+                return session_id
+            else:
+                # Session ID provided but doesn't exist - create new with provided ID
+                client.table('chat_history').insert({
+                    'session_id': session_id,
+                    'student_id': user_id,
+                    'session_name': session_name,
+                    'llm_response_history': [user_entry, assistant_entry],
+                    'study_material_history': [assistant_response] if isinstance(assistant_response, dict) else [],
+                    'created_at': now_iso,
+                    'updated_at': now_iso
+                }).execute()
+                logger.info(f'Created new chat_history with provided session_id={session_id}')
+                return session_id
+        
+        # Create completely new session
+        new_session_id = str(uuid.uuid4())
+        
+        client.table('chat_history').insert({
+            'session_id': new_session_id,
+            'student_id': user_id,
+            'session_name': session_name,
+            'llm_response_history': [user_entry, assistant_entry],
+            'study_material_history': [assistant_response] if isinstance(assistant_response, dict) else [],
+            'created_at': now_iso,
+            'updated_at': now_iso
+        }).execute()
+        
+        logger.info(f'Created new chat_history session_id={new_session_id} for user={user_id}')
+        return new_session_id
+        
+    except Exception as e:
+        logger.error(f'Failed to persist chat history: {e}')
+        return session_id
+
+
+# ----- Main Pipeline Function -----
+
+async def get_llm_streaming_response(
+    uploaded_files_paths: List[Path],
+    user_prompt: str,
+    temp_dir: str,
+    user_api_key: str,
+    user_id: str,
+    provider_name: str,
+    model_name: str,
+    session_id: Optional[str] = None,
+    session_name: Optional[str] = None
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """
+    Complete streaming RAG pipeline for generating structured learning content.
+    Yields partial responses as they're generated.
+    """
+    try:
+        if not user_api_key:
+            yield {
+                "status": "error",
+                "error": "API key is required. Please add your API key in settings to continue.",
+                "error_type": "missing_api_key"
+            }
+            return
+
+        logger.info("Starting streaming RAG pipeline...")
+
+
+        
+        documents = await load_documents_from_files(
+            [str(p) for p in uploaded_files_paths], 
+            temp_dir, 
+            user_api_key, 
+            provider_name, 
+            model_name
+        )
+        
+        combined_text = "\n\n".join(documents)
+        content_type = detect_content_type(user_prompt, "all")
+        
+        # Check if we should skip embedding for small documents
+        if should_skip_embedding(combined_text):
+            logger.info(f"Document small (words={len(combined_text.split())}) — using direct LLM approach")
+            
+            async for response in generate_streaming_response(
+                combined_text, user_prompt, provider_name, model_name, user_api_key, content_type
+            ):
+                # Handle streaming responses
+                if response.get('status') == 'error':
+                    yield response
+                    return
+                elif response.get('status') in ['streaming', 'complete']:
+                    yield response
+                    
+                    # Persist final response with complete session management
+                    if response.get('is_final') and response.get('status') == 'complete':
+                        final_data = response.get('data')
+                        if isinstance(final_data, dict):
+                            # Create session name from metadata
+                            metadata = final_data.get('metadata', {})
+                            final_session_name = session_name or create_session_name(metadata)
+                            
+                            # Use service layer for session management if available
+                            try:
+                                created_session_id = await upsert_learning_session_service(
+                                    user_id, session_id, final_session_name, user_prompt, final_data
+                                )
+                            except Exception as e:
+                                logger.warning(f"Service layer failed, using direct persistence: {e}")
+                                created_session_id = await persist_chat_history(
+                                    user_id, session_id, final_session_name, user_prompt, final_data
+                                )
+                            
+                            # Persist metadata with complete tracking
+                            metadata_ids = await persist_metadata(user_id, metadata)
+                            
+                            yield {
+                                'status': 'persisted',
+                                'session_id': created_session_id,
+                                'metadata_ids': metadata_ids,
+                                'is_final': True
+                            }
+        
+        else:
+            # Full RAG pipeline with embedding
+            logger.info("Using full RAG pipeline with embeddings...")
+            
+            chunks = await perform_document_chunking(documents)
+            
+            # Get embedding preferences with proper fallback
+            embedding_provider, embedding_model, embedding_api_key = await get_embedding_preferences(user_id)
+            
+            # Fallback to chat model if no embedding preferences found
+            if not embedding_provider:
+                embedding_provider = provider_name
+                embedding_model = model_name
+                embedding_api_key = user_api_key
+            
+            # Use user's API key if embedding API key not available
+            if not embedding_api_key:
+                embedding_api_key = user_api_key
+            
+            logger.info(f"Using embedding provider={embedding_provider} model={embedding_model} (key_available={bool(embedding_api_key)})")
+            
+            # Setup vector store and retrieve context
+            vector_store, hybrid_retriever = await setup_vector_store_and_retriever(
+                chunks, embedding_provider, embedding_model, embedding_api_key
+            )
+            
+            retrieved_docs = await hybrid_retriever.ainvoke(user_prompt)
+            enhanced_docs = await enhance_retrieved_context(retrieved_docs, chunks)
+            formatted_context = format_context_for_llm(enhanced_docs)
+            
+            # Stream the response
+            async for response in generate_streaming_response(
+                formatted_context, user_prompt, provider_name, model_name, user_api_key, content_type
+            ):
+                if response.get('status') == 'error':
+                    yield response
+                    return
+                elif response.get('status') in ['streaming', 'complete']:
+                    yield response
+                    
+                    # Persist final response with complete session management
+                    if response.get('is_final') and response.get('status') == 'complete':
+                        final_data = response.get('data')
+                        if isinstance(final_data, dict):
+                            metadata = final_data.get('metadata', {})
+                            final_session_name = session_name or create_session_name(metadata)
+                            
+                            # Use service layer for session management if available
+                            try:
+                                created_session_id = await upsert_learning_session_service(
+                                    user_id, session_id, final_session_name, user_prompt, final_data
+                                )
+                            except Exception as e:
+                                logger.warning(f"Service layer failed, using direct persistence: {e}")
+                                created_session_id = await persist_chat_history(
+                                    user_id, session_id, final_session_name, user_prompt, final_data
+                                )
+                            
+                            # Persist metadata with complete tracking
+                            metadata_ids = await persist_metadata(user_id, metadata)
+                            
+                            yield {
+                                'status': 'persisted', 
+                                'session_id': created_session_id,
+                                'metadata_ids': metadata_ids,
+                                'is_final': True
+                            }
+
     except ValueError as ve:
-        logger.error("Validation error in get_llm_response: %s", ve)
-        return {
+        logger.error(f"Validation error: {ve}")
+        yield {
             "status": "error",
             "error": str(ve),
             "error_type": "validation_error"
         }
     except Exception as e:
-        logger.exception("Error in get_llm_response: %s", e)
-        return {
+        logger.exception(f"Error in streaming pipeline: {e}")
+        yield {
             "status": "error",
             "error": str(e),
             "error_type": "processing_error"
         }
+
+
+# ----- Non-streaming wrapper for backward compatibility -----
+
+async def get_llm_response(
+    uploaded_files_paths: List[Path],
+    user_prompt: str,
+    temp_dir: str,
+    user_api_key: str,
+    user_id: str,
+    provider_name: str,
+    model_name: str,
+    session_id: Optional[str] = None,
+    session_name: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Non-streaming wrapper that collects all streaming responses into final result.
+    Maintains backward compatibility while using streaming under the hood.
+    """
+    final_response = None
+    final_session_id = None
+    
+    async for response in get_llm_streaming_response(
+        uploaded_files_paths, user_prompt, temp_dir, user_api_key, 
+        user_id, provider_name, model_name, session_id, session_name
+    ):
+        if response.get('status') == 'error':
+            return response
+        elif response.get('status') == 'complete':
+            final_response = response.get('data')
+        elif response.get('status') == 'persisted':
+            final_session_id = response.get('session_id')
+    
+    return {
+        'session_id': final_session_id,
+        'llm_response': final_response
+    } if final_response else {'status': 'error', 'error': 'No response generated'}

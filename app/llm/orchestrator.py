@@ -94,13 +94,13 @@ async def orchestrate_prompt(
     # Resolve model and api key (prefer chat use case)
     provider_name, model_name, api_key = await resolve_model_and_key_for_user(student_id, prefer_chat=True, provider_hint=provider_hint)
 
-    # If user requested structured types or uploaded files exist -> structured pipeline
+    # If user requested structured types or uploaded files exist -> structured pipeline (non-streaming wrapper)
     if len(selected) > 0 or len(uploaded) > 0:
-        # get_llm_response expects list[Path]
-        paths = uploaded
+        paths = uploaded or []
+        # get_llm_response returns a finalized dict (backwards compatible)
         resp = await get_llm_response(
             uploaded_files_paths=paths,
-            userprompt=prompt,
+            user_prompt=prompt,
             temp_dir='/tmp',
             user_api_key=api_key,
             user_id=student_id,
@@ -111,11 +111,10 @@ async def orchestrate_prompt(
         )
         return resp
 
-    # No structured request and no files -> call non-streaming chat via get_llm_response for a quick reply
-    # (frontends should prefer streaming via orchestrate_prompt_stream when available)
+    # No structured request and no files -> use the non-streaming wrapper as a quick reply
     resp = await get_llm_response(
         uploaded_files_paths=[],
-        userprompt=prompt,
+        user_prompt=prompt,
         temp_dir='/tmp',
         user_api_key=api_key,
         user_id=student_id,
