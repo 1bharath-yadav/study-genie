@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
 # Install uv to /usr/local/bin
 
 
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s -- --prefix /usr/local --quiet
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s --prefix /usr/local --quiet
 
 # COPY requirements.txt .
 
