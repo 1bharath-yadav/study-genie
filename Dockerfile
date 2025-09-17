@@ -5,7 +5,6 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PORT=7860
-ENV PATH="/app/venv/bin:$PATH"
 
 # Install system dependencies as root
 RUN apt-get update && apt-get install -y \
@@ -13,7 +12,6 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
     
 RUN mkdir -p /data && chmod -R 777 /data
-
 
 # Create a non-root user with UID 1000
 RUN useradd -m -u 1000 user
@@ -39,6 +37,9 @@ ENV HOME=/home/user \
 
 # Install Python dependencies with uv (creates .venv owned by user)
 RUN uv sync --no-cache-dir
+
+# Update PATH to include the virtual environment bin directory
+ENV PATH="/home/user/app/.venv/bin:$PATH"
 
 # Prepare persistent data mount with correct permissions for HF Spaces
 ENV HF_HOME=/data/.huggingface
