@@ -30,6 +30,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /bin/
 
 # Create virtual environment at /app/venv and install dependencies with uv
 ENV VIRTUAL_ENV=/app/venv
+RUN source /usr/local/env 
+
 RUN uv venv $VIRTUAL_ENV
 RUN uv sync
 
@@ -41,7 +43,6 @@ RUN chown -R user:user /app
 
 # Switch to non-root user
 USER user
-
 # Expose port
 EXPOSE 7860
 
