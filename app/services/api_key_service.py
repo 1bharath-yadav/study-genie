@@ -16,6 +16,9 @@ from .student_service import (
 )
 from app.services.db import create_supabase_client, safe_extract_single
 from ..core.encryption import decrypt_api_key
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def get_api_key_for_provider(student_id: str, provider_name: str) -> Optional[str]:
@@ -38,8 +41,8 @@ async def get_api_key_for_provider(student_id: str, provider_name: str) -> Optio
             else:
                 key_data = None
         else:
-      
             keys = get_api_keys_by_user(student_id)
+            logger.debug("Checking %d stored API keys for student=%s provider=%s", len(keys), student_id, provider_name)
             for k in keys:
                 if k.get("provider_name") == provider_name and k.get("is_active", True):
                     key_data = k
@@ -56,16 +59,19 @@ async def get_api_key_for_provider(student_id: str, provider_name: str) -> Optio
         
         if not key_data:
             # Nothing found using either lookup method
+            logger.debug("No active API key found for student=%s provider=%s (provider_id_lookup=%s)", student_id, provider_name, use_provider_id_lookup)
             return None
         
-        # Decrypt the API key
+        # Decrypt the API key (do not log secret values)
         encrypted_key = key_data.get("encrypted_api_key")
         if not encrypted_key:
+            logger.debug("Found API key metadata but encrypted_api_key missing for key id=%s", key_data.get("id"))
             return None
-        
+        logger.debug("Using API key id=%s for student=%s provider=%s", key_data.get("id"), student_id, provider_name)
         return decrypt_api_key(encrypted_key)
     
     except Exception:
+        logger.exception("Error resolving API key for student=%s provider=%s", student_id, provider_name)
         return None
 
 
@@ -90,7 +96,9 @@ async def store_api_key(student_id: str, provider_name: str, api_key: str, key_n
 
 async def get_user_api_keys(student_id: str) -> List[Dict[str, Any]]:
     """Get all API keys for a user (without decrypting them)."""
-    return get_api_keys_by_user(student_id)
+    keys = get_api_keys_by_user(student_id)
+    logger.debug("Retrieved %d API keys for student=%s", len(keys), student_id)
+    return keys
 
 
 async def update_user_api_key(key_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -121,6 +129,7 @@ def deactivate_api_key_by_id(key_id: str) -> bool:
     """Deactivate an API key by setting is_active to False."""
     from .student_service import update_api_key
     result = update_api_key(key_id, {"is_active": False})
+    logger.debug("Deactivated api key id=%s result=%s", key_id, bool(result))
     return result is not None
 
 
@@ -131,23 +140,28 @@ def activate_api_key_for_user(student_id: str, key_id: str) -> Optional[Dict[str
     """
     # Get the key to activate
     keys = get_api_keys_by_user(student_id)
+    logger.debug("activate_api_key_for_user called for student=%s key_id=%s (found %d keys)", student_id, key_id, len(keys))
     target = None
     for k in keys:
         if k.get("id") == key_id:
             target = k
             break
     if not target:
+        logger.debug("activate_api_key_for_user: target key not found for student=%s key_id=%s", student_id, key_id)
         return None
 
     provider = target.get("provider_name")
+    logger.debug("Activating key id=%s for student=%s provider=%s", key_id, student_id, provider)
     # Deactivate other keys for this student+provider
     for k in keys:
         kid = k.get("id")
-        if kid and kid != key_id and k.get("provider_name") == provider:
+        if kid and kid != key_id and k.get("provider_name") == provider and k.get("is_active", False):
+            logger.debug("Deactivating key id=%s for student=%s provider=%s", kid, student_id, provider)
             update_api_key(kid, {"is_active": False})
 
     # Activate target key
     updated = update_api_key(key_id, {"is_active": True})
+    logger.debug("Activation result for key id=%s: %s", key_id, bool(updated))
     return updated
 
 
