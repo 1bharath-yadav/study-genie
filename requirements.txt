@@ -37,6 +37,7 @@ h11>=0.8
 watchfiles>=0.13
 unstructured>=0.18.14
 pillow>=11.3.0
+langchain-unstructured>=0.1.0
 langchain-cohere>=0.4.6
 boto3>=1.40.28
 langchain-mistralai>=0.2.11

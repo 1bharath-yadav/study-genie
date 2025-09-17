@@ -482,7 +482,9 @@ class StudySessionHistory(BaseModel):
 
 # Subject and Content Models
 class ConceptInfo(BaseModel):
-    concept_id: int
+    # IDs may come back as strings from the DB (UUIDs or bigint-as-string).
+    # Accept either int or str for robustness.
+    concept_id: Union[int, str]
     concept_name: str
     concept_order: int
     difficulty_level: DifficultyLevel
@@ -490,7 +492,7 @@ class ConceptInfo(BaseModel):
 
 
 class ChapterInfo(BaseModel):
-    chapter_id: int
+    chapter_id: Union[int, str]
     chapter_name: str
     chapter_order: int
     description: Optional[str] = None
@@ -499,11 +501,12 @@ class ChapterInfo(BaseModel):
 
 
 class SubjectInfo(BaseModel):
-    subject_id: int
+    subject_id: Union[int, str]
     subject_name: str
     description: Optional[str] = None
     chapter_count: int = 0
     concept_count: int = 0
+    session_id: Optional[Union[int, str]] = None
 
 
 class SubjectStructure(BaseModel):

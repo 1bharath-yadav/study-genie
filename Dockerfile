@@ -9,6 +9,12 @@ ENV PORT=7860
 # Set work directory
 WORKDIR /app
 
+# Prepare persistent data mount used by Spaces (/data)
+RUN mkdir -p /data && chown -R root:root /data
+
+# Persist Hugging Face caches under /data
+ENV HF_HOME=/data/.huggingface
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
@@ -26,6 +32,9 @@ RUN uv venv /app/venv && \
 
 # Copy project files
 COPY . .
+
+# Ensure /data is writable by runtime user (will be adjusted later)
+RUN chmod -R 0777 /data || true
 
 # Create a non-root user and fix ownership (including venv)
 RUN useradd -m -u 1000 user && \

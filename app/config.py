@@ -41,6 +41,14 @@ class Settings(BaseSettings):
         "SUPABASE_JWT_SECRET")
     SUPABASE_JWT_ALGORITHM: str = os.getenv(
         "SUPABASE_JWT_ALGORITHM", "HS256")
+    # Redis connection (optional)
+    REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
+
+    # Persistent data directory (used in Spaces /data mount). Use /data by default.
+    PERSIST_DIR: str = os.getenv("PERSIST_DIR", "/data")
+
+    # Temporary upload / processing dir (falls back to PERSIST_DIR/tmp)
+    TEMP_DIR: str = os.getenv("TEMP_DIR", os.path.join(os.getenv("PERSIST_DIR", "/data"), "tmp"))
 
     class Config:
         env_file = ".env"

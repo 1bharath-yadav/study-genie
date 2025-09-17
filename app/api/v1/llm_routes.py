@@ -1,7 +1,7 @@
 """
 Enhanced LLM API routes with streaming support
 """
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
+from fastapi import APIRouter, Depends, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 import json
@@ -12,7 +12,9 @@ import os
 import shutil
 from pathlib import Path
 
-from app.llm.orchestrator import orchestrate_prompt, orchestrate_prompt_stream
+from app.config import settings
+
+from app.llm.orchestrator import orchestrate_prompt_stream
 from ...core.security import get_current_user
 
 # Constants
@@ -101,16 +103,22 @@ def cleanup_temp_files(saved_paths: List[str], tmp_dir: str):
                 os.remove(p)
             except Exception:
                 logger.debug(f"Failed to remove file {p}")
-        
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        # Only remove the temp dir if it's actually a temporary directory.
+        # Some callers (when a session_id is provided) intentionally persist uploads
+        # under the configured PERSIST_DIR; in that case `tmp_dir` should not be removed.
+        try:
+            # If the tmp_dir looks like a temporary mkdtemp folder (has prefix), remove it.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            logger.debug(f"Failed to remove temp dir {tmp_dir}")
     except Exception:
         logger.debug("Error during cleanup", exc_info=True)
 
 
 # ----- Endpoints -----
 
-@router.post("/process-files")
-async def process_files_endpoint(
+@router.post("/stream-structured-content")
+async def stream_structured_content_endpoint(
     files: Optional[List[UploadFile]] = File(None),
     user_query: Optional[str] = Form(None),
     selected_content_types: Optional[str] = Form(None),
@@ -118,49 +126,33 @@ async def process_files_endpoint(
     session_name: Optional[str] = Form(None),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Process uploaded files and generate learning materials."""
-    student_id = current_user["sub"]
-    tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_")
-    saved_paths = []
-    
-    try:
-        # Save uploaded files if provided
-        if files:
-            saved_paths = await save_uploaded_files(files, tmp_dir)
-        
-        # Parse content types
-        parsed_selected = parse_content_types(selected_content_types)
-        
-        # Delegate to orchestrator
-        return await orchestrate_prompt(
-            prompt=user_query or "Please analyze this content and create study materials.",
-            student_id=student_id,
-            selected_content_types=parsed_selected,
-            uploaded_files_paths=[Path(p) for p in saved_paths],
-            session_id=session_id,
-            session_name=session_name,
-        )
-        
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cleanup_temp_files(saved_paths, tmp_dir)
+    """Stream structured learning-materials generation in real-time.
 
-
-@router.post("/process-files-stream")
-async def process_files_stream_endpoint(
-    files: Optional[List[UploadFile]] = File(None),
-    user_query: Optional[str] = Form(None),
-    selected_content_types: Optional[str] = Form(None),
-    session_id: Optional[str] = Form(None),
-    session_name: Optional[str] = Form(None),
-    current_user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Stream processed files and learning material generation in real-time."""
+    Note: This endpoint expects at least one `selected_content_types` item (JSON list or CSV).
+    If content types are intentionally turned off, call `/chat-stream` instead.
+    """
     student_id = current_user["sub"]
-    tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_")
+    # Prefer persistent temp directory root if configured (e.g., /data on Spaces)
+    # Prefer configured persistent and temp directories
+    persist_root = getattr(settings, 'PERSIST_DIR', None)
+    temp_root = getattr(settings, 'TEMP_DIR', None)
+    # If a session_id is provided, persist uploads under PERSIST_DIR/uploads_{session_id}
+    keep_uploads = False
+    if session_id and persist_root:
+        # Persist uploads under a per-student folder for easier export/delete by student
+        upload_dir = os.path.join(persist_root, str(student_id), f"uploads_{session_id}")
+        os.makedirs(upload_dir, exist_ok=True)
+        tmp_dir = upload_dir
+        keep_uploads = True
+    else:
+        # Create ephemeral temp dir under TEMP_DIR if configured, else system temp
+        if temp_root:
+            tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=temp_root)
+        elif persist_root:
+            # If no temp dir set, but a persist root exists, use it for ephemeral files
+            tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=persist_root)
+        else:
+            tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_")
     saved_paths = []
     
     # Important: save uploaded files before returning the StreamingResponse. UploadFile
@@ -172,12 +164,23 @@ async def process_files_stream_endpoint(
     except Exception as e:
         # If saving fails, return a short NDJSON stream that reports the error.
         msg = str(e) if e is not None else "Failed to save uploaded files"
-
         async def error_stream():
             yield json.dumps({'status': 'error', 'error': msg, 'error_type': 'upload_error'}) + "\n"
             yield json.dumps({'status': 'cleanup_complete'}) + "\n"
-        cleanup_temp_files(saved_paths, tmp_dir)
+        # Only cleanup ephemeral temp dirs. If uploads are persisted for a session, keep them.
+        if not (session_id and keep_uploads):
+            cleanup_temp_files(saved_paths, tmp_dir)
         return StreamingResponse(error_stream(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+
+    # If no content types were selected, instruct the client to use chat-stream instead
+    parsed_selected = parse_content_types(selected_content_types)
+    if not parsed_selected:
+        async def instruct_chat_stream():
+            yield json.dumps({'status': 'error', 'error': 'No content types selected. Use /chat-stream for conversational flows.', 'error_type': 'use_chat_stream'}) + "\n"
+            yield json.dumps({'status': 'cleanup_complete'}) + "\n"
+        if not (session_id and keep_uploads):
+            cleanup_temp_files(saved_paths, tmp_dir)
+        return StreamingResponse(instruct_chat_stream(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
 
     async def generate_stream():
         try:
@@ -207,10 +210,10 @@ async def process_files_stream_endpoint(
                 return
 
             # Import streaming function
-            from app.llm.langchain import get_llm_streaming_response
+            from app.llm.langchain import stream_structured_content
 
             # Stream the RAG pipeline results as NDJSON objects per line
-            async for response in get_llm_streaming_response(
+            async for response in stream_structured_content(
                 uploaded_files_paths=[Path(p) for p in saved_paths],
                 user_prompt=user_query or "Please analyze this content and create study materials.",
                 temp_dir=tmp_dir,
@@ -235,7 +238,8 @@ async def process_files_stream_endpoint(
             # emit as NDJSON
             yield json.dumps(error_response) + "\n"
         finally:
-            cleanup_temp_files(saved_paths, tmp_dir)
+            if not (session_id and keep_uploads):
+                cleanup_temp_files(saved_paths, tmp_dir)
             # emit lifecycle completion as NDJSON
             yield json.dumps({'status': 'cleanup_complete'}) + "\n"
     
@@ -249,10 +253,43 @@ async def process_files_stream_endpoint(
 @router.post('/chat-stream')
 async def chat_stream_endpoint(
     user_prompt: str = Form(...),
+    files: Optional[List[UploadFile]] = File(None),
+    selected_content_types: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """Stream a regular chat response with message history persistence."""
+    """Stream a chat response. If `selected_content_types` is provided (non-empty list),
+    the orchestrator will route to the structured/learning-materials streaming pipeline and
+    use any uploaded `files`. Otherwise this behaves like a normal chat stream.
+    """
     student_id = current_user['sub']
-    return await orchestrate_prompt_stream(user_prompt, student_id, session_id=session_id)
+
+    # If files were uploaded, save them and pass their on-disk paths into the orchestrator stream.
+    tmp_dir = None
+    saved_paths = []
+    if files:
+        persist_root = getattr(settings, 'PERSIST_DIR', None)
+        temp_root = getattr(settings, 'TEMP_DIR', None)
+        if session_id and persist_root:
+            upload_dir = os.path.join(persist_root, str(student_id), f"uploads_{session_id}")
+            os.makedirs(upload_dir, exist_ok=True)
+            tmp_dir = upload_dir
+            saved_paths = await save_uploaded_files(files, tmp_dir)
+        else:
+            if temp_root:
+                tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=temp_root)
+            elif persist_root:
+                tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=persist_root)
+            else:
+                tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_")
+            saved_paths = await save_uploaded_files(files, tmp_dir)
+
+    # Delegate to orchestrator stream which will decide structured vs chat streaming
+    return await orchestrate_prompt_stream(
+        user_prompt,
+        student_id,
+        session_id=session_id,
+        uploaded_files_paths=[Path(p) for p in saved_paths] if saved_paths else None,
+        temp_dir=tmp_dir,
+    )
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple
 from pathlib import Path
 import logging
+import json
 
 from fastapi.responses import StreamingResponse
 
-from app.llm.langchain import get_llm_response
+from app.llm.langchain import stream_structured_content
 from app.llm.chat import stream_chat_response
 from app.llm.providers import get_user_model_preferences
 from app.services.api_key_service import get_api_key_for_provider
@@ -73,69 +74,97 @@ async def resolve_model_and_key_for_user(student_id: str, prefer_chat: bool = Tr
     return provider_name, model_name, api_key
 
 
-async def orchestrate_prompt(
-    prompt: str,
-    student_id: str,
-    selected_content_types: Optional[List[str]] = None,
-    uploaded_files_paths: Optional[List[Path]] = None,
-    session_id: Optional[str] = None,
-    session_name: Optional[str] = None,
-    provider_hint: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Main orchestrator for non-streaming flows.
-
-    - If structured content is requested (selected_content_types non-empty) or uploaded files exist,
-      this will call the RAG/structured pipeline `get_llm_response` and return its dict result.
-    - Otherwise, it will call the structured pipeline as a fallback (non-streaming chat) and return its result.
-    """
-    selected = selected_content_types or []
-    uploaded = uploaded_files_paths or []
-
-    # Resolve model and api key (prefer chat use case)
-    provider_name, model_name, api_key = await resolve_model_and_key_for_user(student_id, prefer_chat=True, provider_hint=provider_hint)
-
-    # If user requested structured types or uploaded files exist -> structured pipeline (non-streaming wrapper)
-    if len(selected) > 0 or len(uploaded) > 0:
-        paths = uploaded or []
-        # get_llm_response returns a finalized dict (backwards compatible)
-        resp = await get_llm_response(
-            uploaded_files_paths=paths,
-            user_prompt=prompt,
-            temp_dir='/tmp',
-            user_api_key=api_key,
-            user_id=student_id,
-            provider_name=provider_name,
-            model_name=model_name,
-            session_id=session_id,
-            session_name=session_name,
-        )
-        return resp
-
-    # No structured request and no files -> use the non-streaming wrapper as a quick reply
-    resp = await get_llm_response(
-        uploaded_files_paths=[],
-        user_prompt=prompt,
-        temp_dir='/tmp',
-        user_api_key=api_key,
-        user_id=student_id,
-        provider_name=provider_name,
-        model_name=model_name,
-        session_id=session_id,
-        session_name=session_name,
-    )
-    return resp
-
-
 async def orchestrate_prompt_stream(
     prompt: str,
     student_id: str,
     session_id: Optional[str] = None,
+    uploaded_files_paths: Optional[List[Path]] = None,
+    selected_content_types: Optional[str] = None,
+    temp_dir: Optional[str] = None,
     provider_hint: Optional[str] = None,
 ) -> StreamingResponse:
-    """Return a StreamingResponse for live chat streaming when the user wants a conversational flow.
+    """Return a StreamingResponse for live streaming flows.
 
-    This resolves the user's model and API key then delegates to `stream_chat_response` which
-    returns a StreamingResponse that yields newline-delimited JSON events.
+    Behavior:
+    - If `selected_content_types` is provided (non-empty) or `uploaded_files_paths` is not empty,
+      route to the structured RAG/learning-materials streaming pipeline.
+    - Otherwise, delegate to normal chat streaming.
+
+    The structured pipeline returns an async generator of dicts; this function wraps those
+    dicts into NDJSON lines and performs filesystem cleanup for `temp_dir` when streaming finishes.
     """
-    provider_name, model_name, api_key = await resolve_model_and_key_for_user(student_id, prefer_chat=True, provider_hint=provider_hint)
-    return await stream_chat_response(prompt, student_id, provider_name, model_name, api_key, session_id)
+    # Resolve user's preferred model/key (prefer chat-capable models)
+    try:
+        provider_name, model_name, api_key = await resolve_model_and_key_for_user(student_id, prefer_chat=True, provider_hint=provider_hint)
+    except Exception:
+        # Return a short NDJSON error stream
+        async def err_gen():
+            yield json.dumps({'status': 'error', 'error': 'model resolution failed', 'error_type': 'model_resolution'}) + "\n"
+        return StreamingResponse(err_gen(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+
+    # Decide whether to use structured pipeline
+    use_structured = False
+    if selected_content_types:
+        # non-empty string or JSON list indicates structured request
+        try:
+            parsed = json.loads(selected_content_types)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                use_structured = True
+            elif isinstance(parsed, str) and parsed.strip():
+                use_structured = True
+        except Exception:
+            # fallback: comma-separated values
+            if isinstance(selected_content_types, str) and selected_content_types.strip():
+                use_structured = True
+
+    # NOTE: uploaded files alone should NOT force structured pipeline. Only use structured
+    # when `selected_content_types` explicitly contains items. Files can be passed into
+    # the chat streaming flow when content types are off.
+
+    from app.config import settings
+
+    if use_structured:
+        # Ensure we have data shapes expected by the RAG pipeline
+        paths = uploaded_files_paths or []
+
+        async def structured_gen():
+            try:
+                # Provide a sensible temp_dir: prefer temp configured in settings, or provided temp_dir
+                base_temp = temp_dir or getattr(settings, 'TEMP_DIR', '/tmp')
+                async for resp in stream_structured_content(
+                    paths,
+                    prompt,
+                    base_temp,
+                    api_key,
+                    student_id,
+                    provider_name,
+                    model_name,
+                    session_id,
+                    None
+                ):
+                    yield json.dumps(resp) + "\n"
+            finally:
+                # Best-effort cleanup of temp_dir if provided
+                # Only cleanup if the temp_dir is not the persistent PERSIST_DIR uploads location
+                try:
+                    persist_root = getattr(settings, 'PERSIST_DIR', None)
+                    if temp_dir and persist_root and not str(temp_dir).startswith(str(persist_root)):
+                        import shutil
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    logger.debug("Failed to cleanup temp_dir %s", temp_dir, exc_info=True)
+
+        return StreamingResponse(structured_gen(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+
+    # Default: chat streaming
+    # Forward uploaded file paths and temp_dir so chat can extract file text and include it in the prompt.
+    return await stream_chat_response(
+        prompt,
+        student_id,
+        provider_name,
+        model_name,
+        api_key,
+        session_id,
+        uploaded_files_paths=uploaded_files_paths,
+        temp_dir=temp_dir,
+    )

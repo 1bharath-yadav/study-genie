@@ -24,7 +24,14 @@ async def lifespan(app: FastAPI):
         # Test Supabase connection
         logger.info("Testing Supabase connection...")
         from app.services.db import test_connection
-        
+        # Initialize Redis client (if available)
+        try:
+            from app.deps.redis_client import create_redis_client
+            create_redis_client()
+            logger.info("Redis client initialized")
+        except Exception as _rerr:
+            logger.warning(f"Redis initialization failed: {_rerr}")
+
         if await test_connection():
             logger.info("✅ Supabase connection successful")
         else:
@@ -36,7 +43,13 @@ async def lifespan(app: FastAPI):
         logger.info("💡 Application will continue, but some features may not work")
 
     yield  # Application runs here
-
+    # Shutdown
+    try:
+        from app.deps.redis_client import close_redis
+        await close_redis()
+        logger.info("Redis client closed")
+    except Exception:
+        pass
     # Shutdown
     logger.info("Shutting down StudyGenie API...")
 

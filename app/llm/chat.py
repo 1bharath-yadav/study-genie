@@ -5,12 +5,14 @@ import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
+from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.db.db_client import get_supabase_client
 from app.llm.providers import create_chat_agent
+from app.llm.process_files.process_files import load_documents_from_files
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessagesTypeAdapter
@@ -172,6 +174,8 @@ async def stream_chat_response(
     model_name: str,
     api_key: str,
     session_id: Optional[str] = None,
+    uploaded_files_paths: Optional[List[Path]] = None,
+    temp_dir: Optional[str] = None,
 ):
     """
     Streams NDJSON with deltas and persists new messages into chat_history.llm_response_history.
@@ -183,9 +187,21 @@ async def stream_chat_response(
     row, raw_history = _select_latest_history_row(student_id, session_id)  # single-row fetch with filters [11]
     message_history = _to_pydantic_messages(raw_history)  # validated ModelMessage list [20]
 
+    # If files were uploaded, extract their text and prepend as context to the prompt
+    if uploaded_files_paths and len(uploaded_files_paths) > 0:
+        try:
+            temp = temp_dir or "/tmp"
+            docs = await load_documents_from_files([str(p) for p in uploaded_files_paths], temp, api_key, provider, model_name)
+            if docs:
+                file_context = "\n\n".join(docs)
+                prompt = f"Attached documents:\n{file_context}\n\nUser prompt:\n{prompt}"
+        except Exception:
+            logger.exception("Failed to extract or include uploaded file context into chat prompt")
+
     # 2) Create agent and run with streaming
     agent: Agent = create_chat_agent(provider, model_name, api_key)  # construct agent per provider+model [10]
 
+    logger.info(f"composed chat prompt:{prompt}")
     async def event_generator():
         try:
             async with agent.run_stream(prompt, message_history=message_history) as result:  # run_stream ctx manager [10]

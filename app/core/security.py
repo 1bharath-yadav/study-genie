@@ -114,30 +114,38 @@ def create_credentials_exception(detail: str = "Could not validate credentials")
     )
 
 # Main authentication function
-def get_current_user(authorization: str = Header(...)) -> dict:
+def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     """
     Extract and verify JWT token from Authorization header
     """
+    # If no Authorization header provided, return a 401 with a clear message
+    if not authorization:
+        logger.debug("No Authorization header provided")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     try:
-        # Log the received authorization header for debugging
+        # Log the received authorization header for debugging (truncated)
         logger.info(f"Received authorization header: {authorization[:50] if len(authorization) > 50 else authorization}...")
-        
         # Remove 'Bearer ' prefix if present
         token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
-        
+
         logger.info(f"Extracted token (first 50 chars): {token[:50]}...")
-        
+
         # Decode JWT token
         payload = jwt.decode(
-            token, 
-            settings.JWT_SECRET, 
+            token,
+            settings.JWT_SECRET,
             algorithms=[settings.ALGORITHM],
             options={"verify_aud": False}  # Disable audience verification
         )
-        
+
         logger.info(f"JWT decoded successfully for user: {payload.get('email', 'unknown')}")
         return payload
-        
+
     except JWTError as e:
         logger.error(f"JWT validation failed: {e}")
         raise HTTPException(

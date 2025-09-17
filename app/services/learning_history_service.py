@@ -69,6 +69,21 @@ def upsert_chat_history(student_id: str, session_id: Optional[str], session_name
         return None
 
 
+async def get_learning_history_for_user(student_id: str):
+    """Return all chat_history rows for a student as a list of dicts.
+
+    This is an async-friendly wrapper used by export endpoints.
+    """
+    client = get_supabase_client()
+    try:
+        resp = client.table('chat_history').select('*').eq('student_id', student_id).order('created_at', desc=False).execute()
+        if getattr(resp, 'data', None) is None:
+            return []
+        return resp.data
+    except Exception:
+        return []
+
+
 def save_learning_activity(student_id: str, activity: LearningActivityRequest) -> dict:
     """Persist a learning activity row into the learning_activities table.
 

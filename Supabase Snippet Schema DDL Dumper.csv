@@ -1,0 +1,129 @@
+dump_table_schema
+"CREATE TABLE public.chapters (\n  student_id character varying(100),
+  chapter_id bigint DEFAULT nextval('chapters_chapter_id_seq'::regclass) NOT NULL,
+  subject_id bigint,
+  llm_suggested_chapter_name character varying(200) NOT NULL,
+  chapter_order bigint NOT NULL,
+  description text,
+  created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP\n);"
+"ALTER TABLE public.chapters ADD CONSTRAINT chapters_subject_id_chapter_order_key UNIQUE (subject_id, chapter_order);"
+"ALTER TABLE public.chapters ADD CONSTRAINT chapters_subject_id_llm_suggested_chapter_name_key UNIQUE (subject_id, llm_suggested_chapter_name);"
+ALTER TABLE public.chapters ADD CONSTRAINT chapters_pkey PRIMARY KEY (chapter_id);
+ALTER TABLE public.chapters ADD CONSTRAINT chapters_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+ALTER TABLE public.chapters ADD CONSTRAINT chapters_subject_id_fkey FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE;
+ALTER TABLE public.chapters OWNER TO postgres;
+"CREATE TABLE public.chat_history (\n  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  student_id character varying(100),
+  session_name character varying(500),
+  student_prompt text,
+  llm_response_history jsonb DEFAULT '[]'::jsonb,
+  study_material_history jsonb DEFAULT '[]'::jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  session_id uuid DEFAULT gen_random_uuid()\n);"
+ALTER TABLE public.chat_history ADD CONSTRAINT chat_history_pkey PRIMARY KEY (id);
+ALTER TABLE public.chat_history OWNER TO postgres;
+"CREATE TABLE public.concepts (\n  student_id character varying(100),
+  concept_id bigint DEFAULT nextval('concepts_concept_id_seq'::regclass) NOT NULL,
+  chapter_id bigint,
+  llm_suggested_concept_name character varying(200) NOT NULL,
+  concept_order integer NOT NULL,
+  description text,
+  difficulty_level character varying(20) DEFAULT 'Medium'::character varying,
+  created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP\n);"
+"ALTER TABLE public.concepts ADD CONSTRAINT concepts_chapter_id_concept_order_key UNIQUE (chapter_id, concept_order);"
+"ALTER TABLE public.concepts ADD CONSTRAINT concepts_chapter_id_llm_suggested_concept_name_key UNIQUE (chapter_id, llm_suggested_concept_name);"
+ALTER TABLE public.concepts ADD CONSTRAINT concepts_pkey PRIMARY KEY (concept_id);
+ALTER TABLE public.concepts ADD CONSTRAINT concepts_chapter_id_fkey FOREIGN KEY (chapter_id) REFERENCES chapters(chapter_id) ON DELETE CASCADE;
+ALTER TABLE public.concepts ADD CONSTRAINT concepts_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+ALTER TABLE public.concepts OWNER TO postgres;
+"CREATE TABLE public.learning_activities (\n  activity_id bigint DEFAULT nextval('learning_activities_activity_id_seq'::regclass) NOT NULL,
+  student_id character varying(100),
+  concept_id bigint,
+  activity_type character varying(50) NOT NULL,
+  activity_data jsonb NOT NULL,
+  score numeric(5,2),
+  time_spent integer,
+  completed_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP\n);"
+ALTER TABLE public.learning_activities ADD CONSTRAINT learning_activities_pkey PRIMARY KEY (activity_id);
+ALTER TABLE public.learning_activities ADD CONSTRAINT learning_activities_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+ALTER TABLE public.learning_activities OWNER TO postgres;
+"CREATE TABLE public.learning_sessions (\n  session_id uuid NOT NULL,
+  student_id character varying(100),
+  session_name character varying(500),
+  llm_response_history jsonb DEFAULT '[]'::jsonb,
+  created_at timestamp with time zone,
+  updated_at timestamp with time zone\n);"
+ALTER TABLE public.learning_sessions ADD CONSTRAINT learning_sessions_pkey PRIMARY KEY (session_id);
+ALTER TABLE public.learning_sessions OWNER TO postgres;
+"CREATE TABLE public.model_preferences (\n  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  student_id character varying(100),
+  model_id character varying(300) NOT NULL,
+  provider_name character varying(200) DEFAULT NULL::character varying,
+  use_for_chat boolean DEFAULT false,
+  use_for_embedding boolean DEFAULT false,
+  is_default boolean DEFAULT false,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now()\n);"
+"ALTER TABLE public.model_preferences ADD CONSTRAINT model_preferences_student_id_model_id_key UNIQUE (student_id, model_id);"
+ALTER TABLE public.model_preferences ADD CONSTRAINT model_preferences_pkey PRIMARY KEY (id);
+ALTER TABLE public.model_preferences ADD CONSTRAINT model_preferences_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+CREATE INDEX idx_model_prefs_student ON public.model_preferences USING btree (student_id);
+ALTER TABLE public.model_preferences OWNER TO postgres;
+"CREATE TABLE public.students (\n  student_id character varying(100) NOT NULL,
+  username character varying(50) NOT NULL,
+  email character varying(100) NOT NULL,
+  full_name character varying(100) NOT NULL,
+  grade_level character varying(100) NOT NULL,
+  bio character varying(100) NOT NULL,
+  learning_preferences jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP\n);"
+ALTER TABLE public.students ADD CONSTRAINT students_email_key UNIQUE (email);
+ALTER TABLE public.students ADD CONSTRAINT students_username_key UNIQUE (username);
+ALTER TABLE public.students ADD CONSTRAINT students_pkey PRIMARY KEY (student_id);
+ALTER TABLE public.students OWNER TO postgres;
+"CREATE TABLE public.subjects (\n  student_id character varying(100),
+  subject_id bigint DEFAULT nextval('subjects_subject_id_seq'::regclass) NOT NULL,
+  llm_suggested_subject_name character varying(200) NOT NULL,
+  created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+  session_id uuid\n);"
+ALTER TABLE public.subjects ADD CONSTRAINT subjects_pkey PRIMARY KEY (subject_id);
+ALTER TABLE public.subjects ADD CONSTRAINT subjects_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+CREATE INDEX idx_subjects_session_id ON public.subjects USING btree (session_id);
+"CREATE UNIQUE INDEX idx_subjects_student_name ON public.subjects USING btree (student_id, llm_suggested_subject_name);"
+ALTER TABLE public.subjects OWNER TO postgres;
+"CREATE TABLE public.user_api_keys (\n  id uuid DEFAULT gen_random_uuid() NOT NULL,
+  student_id character varying(100),
+  provider_id character varying(100),
+  provider_name character varying(200) NOT NULL,
+  key_name character varying(200) DEFAULT NULL::character varying,
+  encrypted_api_key text NOT NULL,
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now()\n);"
+ALTER TABLE public.user_api_keys ADD CONSTRAINT user_api_keys_pkey PRIMARY KEY (id);
+ALTER TABLE public.user_api_keys ADD CONSTRAINT user_api_keys_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+CREATE INDEX idx_user_api_keys_provider ON public.user_api_keys USING btree (provider_name);
+CREATE INDEX idx_user_api_keys_student ON public.user_api_keys USING btree (student_id);
+ALTER TABLE public.user_api_keys OWNER TO postgres;
+"CREATE TABLE public.weaknesses (\n  weakness_id bigint DEFAULT nextval('weaknesses_weakness_id_seq'::regclass) NOT NULL,
+  student_id character varying(100),
+  subject_id bigint,
+  concept_id bigint,
+  weakness_type character varying(50) NOT NULL,
+  error_pattern text,
+  frequency_count integer DEFAULT 1,
+  severity_score numeric(3,2) DEFAULT 0.00,
+  last_occurrence timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+  is_resolved boolean DEFAULT false,
+  created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP\n);"
+ALTER TABLE public.weaknesses ADD CONSTRAINT weaknesses_pkey PRIMARY KEY (weakness_id);
+ALTER TABLE public.weaknesses ADD CONSTRAINT weaknesses_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+ALTER TABLE public.weaknesses OWNER TO postgres;
