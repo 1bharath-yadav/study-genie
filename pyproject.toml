@@ -46,6 +46,7 @@ dependencies = [
 	"whisper>=1.1.10",
 	"pandas>=2.3.2",
 	"email-validator>=2.3.0",
+	"redis>=6.4.0",
 ]
 
 [project.optional-dependencies]
