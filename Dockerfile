@@ -25,8 +25,8 @@ ENV HF_HOME=/data/.huggingface
 # Copy requirements first (for better build cache)
 COPY pyproject.toml .
 
-# Install uv (stable prebuilt binary) into /usr/local (system-wide)
-RUN curl -LsSf https://astral.sh/uv/0.8.17/install.sh | env UV_INSTALL_DIR=/usr/local sh
+# Copy uv binaries from official image (pinned version; already in /bin PATH)
+COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /bin/
 
 # Create virtual environment at /app/venv and install dependencies with uv
 ENV VIRTUAL_ENV=/app/venv
