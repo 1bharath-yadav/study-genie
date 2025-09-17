@@ -197,6 +197,7 @@ def _create_model(provider: str, model_name: str, api_key: str):
 def create_learning_agent(provider: str, model_name: str, api_key: str):
     """Create an agent for generating learning content."""
     model = _create_model(provider, model_name, api_key)
+    print(f"api_key{api_key}")
     return Agent(model)
 
 
