@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install uv (stable prebuilt binary) into /usr/local/bin
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && mv ~/.cargo/bin/uv /usr/local/bin/uv
+    && mv /root/.local/bin /usr/local/bin/uv
 
 # Copy requirements first (for better build cache)
 COPY requirements.txt .
