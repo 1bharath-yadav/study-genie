@@ -67,3 +67,32 @@ async def activate_api_key(key_id: str, current_user: Dict[str, Any] = Depends(g
     if not updated:
         raise HTTPException(status_code=404, detail="Key not found or could not be activated")
     return updated
+
+
+
+@router.get("/debug/safe-keys")
+async def debug_user_keys(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """Return sanitized API key metadata for the current user (no secrets).
+
+    This endpoint is intended for debugging during development. It does not
+    return encrypted_api_key or any secret material.
+    """
+    student_id = current_user.get("sub") or current_user.get("student_id")
+    if not student_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    keys = await api_key_service.get_user_api_keys(student_id)
+    safe = []
+    for k in keys:
+        safe.append({
+            "id": k.get("id"),
+            "provider_name": k.get("provider_name"),
+            "provider_id": k.get("provider_id"),
+            "key_name": k.get("key_name"),
+            "is_active": k.get("is_active", False),
+            "is_default": k.get("is_default", False),
+            "created_at": k.get("created_at"),
+            "updated_at": k.get("updated_at"),
+        })
+
+    return {"keys": safe}
