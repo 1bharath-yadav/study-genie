@@ -204,6 +204,7 @@ async def stream_chat_response(
     logger.info(f"composed chat prompt:{prompt}")
     async def event_generator():
         try:
+            logger.info(f'Chat prompt is :{prompt}')
             async with agent.run_stream(prompt, message_history=message_history) as result:  # run_stream ctx manager [10]
                 # Stream text growth events; stream_text yields growing text until completion
                 async for text in result.stream_text():  # documented streaming pattern [8][6]

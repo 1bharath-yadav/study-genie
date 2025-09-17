@@ -13,6 +13,7 @@ from . import (
     models,
     content_routes,
     cache_routes,
+    analytics_routes,
     export_routes,
 )
 
@@ -26,6 +27,7 @@ router.include_router(provider_routes.router)
 router.include_router(llm_routes.router)
 router.include_router(content_routes.router)
 router.include_router(cache_routes.router)
+router.include_router(analytics_routes.router)
 router.include_router(session_routes.router)
 router.include_router(export_routes.router)
 router.include_router(model_preferences.router)

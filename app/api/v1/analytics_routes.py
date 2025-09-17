@@ -1,17 +1,44 @@
-# """Analytics routes removed.
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import Any, Dict
+from app.services import activity_service
+from app.core.security import get_current_student_id
 
-# This module kept as a minimal import-safe stub so existing imports do not fail.
-# """
+router = APIRouter(prefix="/analytics", tags=["analytics"])
 
-# from fastapi import APIRouter
 
-# router = APIRouter(prefix="/analytics", tags=["analytics"])
+class ActivityIn(BaseModel):
+	activity_type: str
+	related_subject_id: int | None = None
+	related_chapter_id: int | None = None
+	related_concept_id: int | None = None
+	payload: Dict[str, Any] = {}
+	score: float | None = None
+	time_spent_seconds: int | None = None
 
-# # No endpoints are exposed. Analytics feature intentionally removed.
-#         raise HTTPException(
-#             status_code=500, 
-#             detail=f"Error fetching subject analytics: {str(e)}"
-#         )
+
+@router.post('/activity')
+async def post_activity(activity: ActivityIn, student_id: str = Depends(get_current_student_id)):
+	try:
+		obj = activity.dict()
+		obj['student_id'] = student_id
+		rec = await activity_service.insert_activity(obj)
+		if rec is None:
+			raise HTTPException(status_code=500, detail='Failed to save activity')
+		return {'success': True, 'data': rec}
+	except HTTPException:
+		raise
+	except Exception as e:
+		raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/{student_identifier}/summary')
+async def get_summary(student_identifier: str, days: int = 30, current_student_id: str = Depends(get_current_student_id)):
+	# Only allow requesting own data for now
+	if student_identifier != current_student_id:
+		raise HTTPException(status_code=403, detail='Forbidden')
+	summary = await activity_service.get_activity_summary(current_student_id, days)
+	return {'success': True, 'data': summary}
 
 
 # @router.get("/{student_identifier}/progress")
@@ -165,6 +192,29 @@
 
 
 # @router.get("/{student_identifier}/weekly-trends")
+# Weakness analysis
+@router.get('/{student_identifier}/weaknesses')
+async def get_weaknesses(student_identifier: str, days: int = 30, current_student_id: str = Depends(get_current_student_id)):
+	if student_identifier != current_student_id:
+		raise HTTPException(status_code=403, detail='Forbidden')
+	data = await activity_service.get_weakness_analysis(current_student_id, days)
+	return {'success': True, 'data': data}
+
+
+@router.get('/{student_identifier}/weekly-trends')
+async def get_weekly_trends_endpoint(student_identifier: str, weeks: int = 4, current_student_id: str = Depends(get_current_student_id)):
+	if student_identifier != current_student_id:
+		raise HTTPException(status_code=403, detail='Forbidden')
+	data = await activity_service.get_weekly_trends(current_student_id, weeks)
+	return {'success': True, 'data': data}
+
+
+@router.get('/{student_identifier}/monthly-trends')
+async def get_monthly_trends_endpoint(student_identifier: str, months: int = 3, current_student_id: str = Depends(get_current_student_id)):
+	if student_identifier != current_student_id:
+		raise HTTPException(status_code=403, detail='Forbidden')
+	data = await activity_service.get_monthly_trends(current_student_id, months)
+	return {'success': True, 'data': data}
 # async def get_weekly_trends_endpoint(
 #     student_identifier: str,
 #     weeks: int = Query(4, description="Number of weeks to look back"),

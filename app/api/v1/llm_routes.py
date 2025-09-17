@@ -147,9 +147,17 @@ async def stream_structured_content_endpoint(
     else:
         # Create ephemeral temp dir under TEMP_DIR if configured, else system temp
         if temp_root:
+            try:
+                os.makedirs(temp_root, exist_ok=True)
+            except Exception:
+                logger.debug(f"Failed to ensure temp_root exists: {temp_root}")
             tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=temp_root)
         elif persist_root:
             # If no temp dir set, but a persist root exists, use it for ephemeral files
+            try:
+                os.makedirs(persist_root, exist_ok=True)
+            except Exception:
+                logger.debug(f"Failed to ensure persist_root exists: {persist_root}")
             tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=persist_root)
         else:
             tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_")
@@ -277,8 +285,16 @@ async def chat_stream_endpoint(
             saved_paths = await save_uploaded_files(files, tmp_dir)
         else:
             if temp_root:
+                try:
+                    os.makedirs(temp_root, exist_ok=True)
+                except Exception:
+                    logger.debug(f"Failed to ensure temp_root exists: {temp_root}")
                 tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=temp_root)
             elif persist_root:
+                try:
+                    os.makedirs(persist_root, exist_ok=True)
+                except Exception:
+                    logger.debug(f"Failed to ensure persist_root exists: {persist_root}")
                 tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_", dir=persist_root)
             else:
                 tmp_dir = tempfile.mkdtemp(prefix="uploaded_files_")

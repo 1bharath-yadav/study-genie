@@ -39,17 +39,6 @@ ALTER TABLE public.concepts ADD CONSTRAINT concepts_pkey PRIMARY KEY (concept_id
 ALTER TABLE public.concepts ADD CONSTRAINT concepts_chapter_id_fkey FOREIGN KEY (chapter_id) REFERENCES chapters(chapter_id) ON DELETE CASCADE;
 ALTER TABLE public.concepts ADD CONSTRAINT concepts_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
 ALTER TABLE public.concepts OWNER TO postgres;
-"CREATE TABLE public.learning_activities (\n  activity_id bigint DEFAULT nextval('learning_activities_activity_id_seq'::regclass) NOT NULL,
-  student_id character varying(100),
-  concept_id bigint,
-  activity_type character varying(50) NOT NULL,
-  activity_data jsonb NOT NULL,
-  score numeric(5,2),
-  time_spent integer,
-  completed_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP\n);"
-ALTER TABLE public.learning_activities ADD CONSTRAINT learning_activities_pkey PRIMARY KEY (activity_id);
-ALTER TABLE public.learning_activities ADD CONSTRAINT learning_activities_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
-ALTER TABLE public.learning_activities OWNER TO postgres;
 "CREATE TABLE public.learning_sessions (\n  session_id uuid NOT NULL,
   student_id character varying(100),
   session_name character varying(500),
@@ -112,18 +101,3 @@ ALTER TABLE public.user_api_keys ADD CONSTRAINT user_api_keys_student_id_fkey FO
 CREATE INDEX idx_user_api_keys_provider ON public.user_api_keys USING btree (provider_name);
 CREATE INDEX idx_user_api_keys_student ON public.user_api_keys USING btree (student_id);
 ALTER TABLE public.user_api_keys OWNER TO postgres;
-"CREATE TABLE public.weaknesses (\n  weakness_id bigint DEFAULT nextval('weaknesses_weakness_id_seq'::regclass) NOT NULL,
-  student_id character varying(100),
-  subject_id bigint,
-  concept_id bigint,
-  weakness_type character varying(50) NOT NULL,
-  error_pattern text,
-  frequency_count integer DEFAULT 1,
-  severity_score numeric(3,2) DEFAULT 0.00,
-  last_occurrence timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-  is_resolved boolean DEFAULT false,
-  created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP\n);"
-ALTER TABLE public.weaknesses ADD CONSTRAINT weaknesses_pkey PRIMARY KEY (weakness_id);
-ALTER TABLE public.weaknesses ADD CONSTRAINT weaknesses_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
-ALTER TABLE public.weaknesses OWNER TO postgres;

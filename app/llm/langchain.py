@@ -365,6 +365,7 @@ async def generate_streaming_response(
         final_content_type = detect_content_type(query, content_type)
         prompt = build_prompt(context, query, final_content_type)
         
+        logger.info(f'prompt for structured_llm{prompt}')
         logger.info(f"Creating learning agent for provider={provider} model={model_name}")
         agent = create_learning_agent(provider, model_name, api_key)
         
