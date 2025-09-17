@@ -7,20 +7,23 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=7860
 ENV PATH="/app/venv/bin:$PATH"
 
-WORKDIR /app
-
-# Prepare persistent data mount
-RUN mkdir -p /data && chown -R root:root /data
-ENV HF_HOME=/data/.huggingface
-
-# Install system dependencies
+# Install system dependencies as root
 RUN apt-get update && apt-get install -y \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (stable prebuilt binary) into /usr/local/bin
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && mv /root/.local/bin /usr/local/bin/uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create non-root user
+RUN useradd -m -u 1000 user
+
+# Set working directory and create necessary directories
+WORKDIR /app
+
+# Prepare persistent data mount with correct permissions
+RUN mkdir -p /data && chmod -R 777 /data
+ENV HF_HOME=/data/.huggingface
 
 # Copy requirements first (for better build cache)
 COPY requirements.txt .
@@ -32,12 +35,10 @@ RUN uv venv /app/venv && \
 # Copy project files
 COPY . .
 
-# Ensure /data writable
-RUN chmod -R 0777 /data || true
+# Change ownership to user after all files are copied
+RUN chown -R user:user /app
 
-# Create non-root user and fix ownership
-RUN useradd -m -u 1000 user && \
-    chown -R user:user /app
+# Switch to non-root user
 USER user
 
 # Expose port
@@ -49,30 +50,3 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 
 # Start the application using venv-installed uvicorn
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "1"]
-
-
-
-# Install uv to /usr/local/bin
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh -s  /usr/local --quiet
-
-# Copy requirements
-COPY requirements.txt .
-
-# Create virtual environment and install Python dependencies with uv
-RUN uv venv /app/venv && \
-    uv pip install --python /app/venv/bin/python -r requirements.txt
-
-# Copy project files
-COPY . .
-
-# Create a non-root user and fix ownership (including venv)
-RUN useradd -m -u 1000 user && \
-    chown -R user:user /app
-USER user
-
-# Expose port
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:7860/health || exit 1
-
-# Start the application (activating venv)
-CMD ["sh", "-c", ". /app/venv/bin/activate && exec uvicorn app.main:app --host 0.0.0.0 --port 7860 --workers 1"]
