@@ -12,8 +12,6 @@ RUN apt-get update && apt-get install -y \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (stable prebuilt binary) into /usr/local/bin
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Create non-root user
 RUN useradd -m -u 1000 user
@@ -27,6 +25,9 @@ ENV HF_HOME=/data/.huggingface
 
 # Copy requirements first (for better build cache)
 COPY pyproject.toml .
+
+# Install uv (stable prebuilt binary) into /usr/local/bin
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Create virtual environment and install dependencies with uv
 RUN uv sync
