@@ -26,11 +26,11 @@ RUN mkdir -p /data && chmod -R 777 /data
 ENV HF_HOME=/data/.huggingface
 
 # Copy requirements first (for better build cache)
-COPY requirements.txt .
+COPY pyproject.toml .
 
 # Create virtual environment and install dependencies with uv
-RUN uv venv /app/venv && \
-    uv pip install -r requirements.txt
+RUN uv sync
+   
 
 # Copy project files
 COPY . .
