@@ -11,6 +11,8 @@ ENV PATH="/app/venv/bin:$PATH"
 RUN apt-get update && apt-get install -y \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+    
+RUN mkdir -p /data && chmod -R 777 /data
 
 
 # Create a non-root user with UID 1000
@@ -39,7 +41,6 @@ ENV HOME=/home/user \
 RUN uv sync --no-cache-dir
 
 # Prepare persistent data mount with correct permissions for HF Spaces
-RUN mkdir -p /data && chmod -R 777 /data
 ENV HF_HOME=/data/.huggingface
 
 # Expose port
