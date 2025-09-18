@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+import json
 from .db import create_supabase_client, safe_extract_single
 
 
@@ -9,7 +10,15 @@ async def insert_activity(activity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     client = create_supabase_client()
     if not client:
         return None
+
     payload = activity.get('payload') or {}
+    # Accept stringified JSON payloads and coerce to dict
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+
     insert_obj = {
         'student_id': activity.get('student_id'),
         'activity_type': activity.get('activity_type'),
@@ -18,23 +27,28 @@ async def insert_activity(activity: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         'related_concept_id': activity.get('related_concept_id'),
         'payload': payload,
         'score': activity.get('score'),
-        'time_spent_seconds': activity.get('time_spent_seconds')
+        'time_spent_seconds': activity.get('time_spent_seconds'),
     }
+
     resp = client.table('student_activity').insert(insert_obj).execute()
     return safe_extract_single(resp)
 
 
 async def get_activity_summary(student_id: str, days: int = 30) -> Dict[str, Any]:
-    """Return simple aggregates over recent activity for analytics dashboard.
-    """
+    """Return simple aggregates over recent activity for analytics dashboard."""
     client = create_supabase_client()
     if not client:
         return {}
+
     try:
-        r = client.table('student_activity').select('activity_type, score, time_spent_seconds, created_at').gte('created_at', f"now() - interval '{days} days'").eq('student_id', student_id).execute()
+        r = client.table('student_activity').select('activity_type, score, time_spent_seconds, created_at').gte(
+            'created_at', f"now() - interval '{days} days'"
+        ).eq('student_id', student_id).execute()
         data = r.data or []
+
         total = len(data)
         distinct_types = len(set(d.get('activity_type') for d in data if d.get('activity_type')))
+
         scores = []
         for d in data:
             s = d.get('score')
@@ -43,7 +57,14 @@ async def get_activity_summary(student_id: str, days: int = 30) -> Dict[str, Any
                     scores.append(float(s))
             except Exception:
                 continue
-        times = [int(d.get('time_spent_seconds') or 0) for d in data]
+
+        times = []
+        for d in data:
+            try:
+                times.append(int(d.get('time_spent_seconds') or 0))
+            except Exception:
+                times.append(0)
+
         avg_score = sum(scores) / len(scores) if scores else 0
         total_time = sum(times)
         return {'total_activities': total, 'distinct_activity_types': distinct_types, 'avg_score': avg_score, 'total_time_spent': total_time}
@@ -53,6 +74,7 @@ async def get_activity_summary(student_id: str, days: int = 30) -> Dict[str, Any
 
 async def get_weakness_analysis(student_id: str, days: int = 30, top_n: int = 10) -> Dict[str, Any]:
     """Compute weak concepts/subjects based on recent activity.
+
     Strategy:
     - Fetch recent activity rows for the student
     - Prefer explicit related_concept_id / related_subject_id columns; fall back to payload fields
@@ -62,17 +84,32 @@ async def get_weakness_analysis(student_id: str, days: int = 30, top_n: int = 10
     client = create_supabase_client()
     if not client:
         return {}
+
     try:
-        r = client.table('student_activity').select('related_concept_id, related_subject_id, payload, score, activity_type, created_at').gte('created_at', f"now() - interval '{days} days'").eq('student_id', student_id).execute()
+        r = client.table('student_activity').select('related_concept_id, related_subject_id, payload, score, activity_type, created_at').gte(
+            'created_at', f"now() - interval '{days} days'"
+        ).eq('student_id', student_id).execute()
         rows = r.data or []
 
         concept_stats: Dict[str, Dict[str, Any]] = {}
         subject_stats: Dict[str, Dict[str, Any]] = {}
 
         for d in rows:
-            # Determine ids
-            c_id = d.get('related_concept_id') or (d.get('payload') or {}).get('concept_id')
-            s_id = d.get('related_subject_id') or (d.get('payload') or {}).get('subject_id')
+            # Normalize payload to a dict if it's stringified JSON
+            raw_payload = d.get('payload')
+            if isinstance(raw_payload, str):
+                try:
+                    payload = json.loads(raw_payload)
+                except Exception:
+                    payload = {}
+            elif isinstance(raw_payload, dict):
+                payload = raw_payload
+            else:
+                payload = {}
+
+            # Determine ids (prefer explicit related_* columns)
+            c_id = d.get('related_concept_id') or payload.get('concept_id')
+            s_id = d.get('related_subject_id') or payload.get('subject_id')
 
             # score may be present
             score = d.get('score')
@@ -82,7 +119,6 @@ async def get_weakness_analysis(student_id: str, days: int = 30, top_n: int = 10
                 score = None
 
             # Try to infer correctness from payload flags
-            payload = d.get('payload') or {}
             is_correct = None
             for k in ('correct', 'is_correct', 'was_correct', 'result', 'isRight'):
                 if isinstance(payload.get(k), bool):
@@ -148,9 +184,12 @@ async def get_weekly_trends(student_id: str, weeks: int = 4) -> Dict[str, Any]:
     client = create_supabase_client()
     if not client:
         return {}
+
     try:
         days = max(7, weeks * 7)
-        r = client.table('student_activity').select('score, time_spent_seconds, created_at').gte('created_at', f"now() - interval '{days} days'").eq('student_id', student_id).execute()
+        r = client.table('student_activity').select('score, time_spent_seconds, created_at').gte(
+            'created_at', f"now() - interval '{days} days'"
+        ).eq('student_id', student_id).execute()
         rows = r.data or []
 
         # Build week buckets keyed by ISO year-week (YYYY-WW)
@@ -186,9 +225,9 @@ async def get_weekly_trends(student_id: str, weeks: int = 4) -> Dict[str, Any]:
             key = f"{year}-{week:02d}"
             b = buckets.get(key, {'total_activities': 0, 'scores': [], 'total_time_spent': 0, 'week_start': wk_start.isoformat()})
             avg_score = (sum(b['scores']) / len(b['scores'])) if b.get('scores') else None
-            items.append({ 'week': key, 'week_start': b.get('week_start'), 'total_activities': b.get('total_activities', 0), 'avg_score': avg_score, 'total_time_spent': b.get('total_time_spent', 0) })
+            items.append({'week': key, 'week_start': b.get('week_start'), 'total_activities': b.get('total_activities', 0), 'avg_score': avg_score, 'total_time_spent': b.get('total_time_spent', 0)})
 
-        return { 'weeks': items }
+        return {'weeks': items}
     except Exception:
         return {}
 
@@ -203,7 +242,9 @@ async def get_monthly_trends(student_id: str, months: int = 3) -> Dict[str, Any]
     try:
         # approximate days
         days = max(28, months * 30)
-        r = client.table('student_activity').select('score, time_spent_seconds, created_at').gte('created_at', f"now() - interval '{days} days'").eq('student_id', student_id).execute()
+        r = client.table('student_activity').select('score, time_spent_seconds, created_at').gte(
+            'created_at', f"now() - interval '{days} days'"
+        ).eq('student_id', student_id).execute()
         rows = r.data or []
 
         buckets: Dict[str, Dict[str, Any]] = {}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import AsyncGenerator, List, Dict, Any, Tuple
 from pathlib import Path
@@ -904,32 +905,38 @@ async def stream_structured_content(
                 elif response.get('status') in ['streaming', 'complete']:
                     yield response
                     
-                    # Persist final response with complete session management
+                    # Persist final response: schedule DB work in background and
+                    # return immediately to the client so streaming latency is low.
                     if response.get('is_final') and response.get('status') == 'complete':
                         final_data = response.get('data')
                         if isinstance(final_data, dict):
-                            # Create session name from metadata
                             metadata = final_data.get('metadata', {})
                             final_session_name = session_name or create_session_name(metadata)
-                            
-                            # Use service layer for session management if available
-                            try:
-                                created_session_id = await upsert_learning_session_service(
-                                    user_id, session_id, final_session_name, user_prompt, final_data
-                                )
-                            except Exception as e:
-                                logger.warning(f"Service layer failed, using direct persistence: {e}")
-                                created_session_id = await persist_chat_history(
-                                    user_id, session_id, final_session_name, user_prompt, final_data
-                                )
-                            
-                            # Persist metadata with complete tracking
-                            metadata_ids = await persist_metadata(user_id, metadata)
-                            
+
+                            async def _bg_persist_small():
+                                try:
+                                    # final_data should be a dict here; coerce defensively
+                                    assistant_resp = final_data if isinstance(final_data, dict) else (final_data or {})
+                                    try:
+                                        await upsert_learning_session_service(
+                                            user_id, session_id, final_session_name, user_prompt, assistant_resp
+                                        )
+                                    except Exception:
+                                        await persist_chat_history(
+                                            user_id, session_id, final_session_name, user_prompt, assistant_resp
+                                        )
+                                    # Persist metadata; ignore return value here
+                                    await persist_metadata(user_id, metadata)
+                                    logger.info("Background persistence completed for user=%s", user_id)
+                                except Exception as exc:
+                                    logger.error("Background persistence failed: %s", exc)
+
+                            asyncio.create_task(_bg_persist_small())
+
                             yield {
-                                'status': 'persisted',
-                                'session_id': created_session_id,
-                                'metadata_ids': metadata_ids,
+                                'status': 'persistence_scheduled',
+                                'session_id': session_id,
+                                'metadata_ids': {},
                                 'is_final': True
                             }
         
@@ -1002,31 +1009,36 @@ async def stream_structured_content(
                 elif response.get('status') in ['streaming', 'complete']:
                     yield response
                     
-                    # Persist final response with complete session management
+                    # Persist final response: schedule DB work in background and
+                    # return immediately to the client so streaming latency is low.
                     if response.get('is_final') and response.get('status') == 'complete':
                         final_data = response.get('data')
                         if isinstance(final_data, dict):
                             metadata = final_data.get('metadata', {})
                             final_session_name = session_name or create_session_name(metadata)
-                            
-                            # Use service layer for session management if available
-                            try:
-                                created_session_id = await upsert_learning_session_service(
-                                    user_id, session_id, final_session_name, user_prompt, final_data
-                                )
-                            except Exception as e:
-                                logger.warning(f"Service layer failed, using direct persistence: {e}")
-                                created_session_id = await persist_chat_history(
-                                    user_id, session_id, final_session_name, user_prompt, final_data
-                                )
-                            
-                            # Persist metadata with complete tracking
-                            metadata_ids = await persist_metadata(user_id, metadata)
-                            
+
+                            async def _bg_persist_rag():
+                                try:
+                                    assistant_resp = final_data if isinstance(final_data, dict) else (final_data or {})
+                                    try:
+                                        await upsert_learning_session_service(
+                                            user_id, session_id, final_session_name, user_prompt, assistant_resp
+                                        )
+                                    except Exception:
+                                        await persist_chat_history(
+                                            user_id, session_id, final_session_name, user_prompt, assistant_resp
+                                        )
+                                    await persist_metadata(user_id, metadata)
+                                    logger.info("Background persistence completed for user=%s", user_id)
+                                except Exception as exc:
+                                    logger.error("Background persistence failed: %s", exc)
+
+                            asyncio.create_task(_bg_persist_rag())
+
                             yield {
-                                'status': 'persisted', 
-                                'session_id': created_session_id,
-                                'metadata_ids': metadata_ids,
+                                'status': 'persistence_scheduled',
+                                'session_id': session_id,
+                                'metadata_ids': {},
                                 'is_final': True
                             }
 
@@ -1044,40 +1056,3 @@ async def stream_structured_content(
             "error": str(e),
             "error_type": "processing_error"
         }
-
-
-# ----- Non-streaming wrapper for backward compatibility -----
-
-async def get_llm_response(
-    uploaded_files_paths: List[Path],
-    user_prompt: str,
-    temp_dir: str,
-    user_api_key: str,
-    user_id: str,
-    provider_name: str,
-    model_name: str,
-    session_id: Optional[str] = None,
-    session_name: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Non-streaming wrapper that collects all streaming responses into final result.
-    Maintains backward compatibility while using streaming under the hood.
-    """
-    final_response = None
-    final_session_id = None
-    
-    async for response in stream_structured_content(
-        uploaded_files_paths, user_prompt, temp_dir, user_api_key, 
-        user_id, provider_name, model_name, session_id, session_name
-    ):
-        if response.get('status') == 'error':
-            return response
-        elif response.get('status') == 'complete':
-            final_response = response.get('data')
-        elif response.get('status') == 'persisted':
-            final_session_id = response.get('session_id')
-    
-    return {
-        'session_id': final_session_id,
-        'llm_response': final_response
-    } if final_response else {'status': 'error', 'error': 'No response generated'}

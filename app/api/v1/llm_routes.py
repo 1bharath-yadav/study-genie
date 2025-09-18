@@ -133,16 +133,27 @@ async def stream_structured_content_endpoint(
     """
     student_id = current_user["sub"]
     # Prefer persistent temp directory root if configured (e.g., /data on Spaces)
-    # Prefer configured persistent and temp directories
     persist_root = getattr(settings, 'PERSIST_DIR', None)
     temp_root = getattr(settings, 'TEMP_DIR', None)
-    # If a session_id is provided, persist uploads under PERSIST_DIR/uploads_{session_id}
+    # If PERSIST_DIR is configured, persist uploads under PERSIST_DIR/{student_id}/uploaded_files/
     keep_uploads = False
-    if session_id and persist_root:
+    if files and persist_root:
         # Persist uploads under a per-student folder for easier export/delete by student
-        upload_dir = os.path.join(persist_root, str(student_id), f"uploads_{session_id}")
-        os.makedirs(upload_dir, exist_ok=True)
-        tmp_dir = upload_dir
+        base_upload_dir = os.path.join(persist_root, str(student_id), "uploaded_files")
+        try:
+            os.makedirs(base_upload_dir, exist_ok=True)
+        except Exception:
+            logger.debug(f"Failed to ensure base_upload_dir exists: {base_upload_dir}")
+        if session_id:
+            upload_dir = os.path.join(base_upload_dir, f"uploads_{session_id}")
+            try:
+                os.makedirs(upload_dir, exist_ok=True)
+            except Exception:
+                logger.debug(f"Failed to ensure upload_dir exists: {upload_dir}")
+            tmp_dir = upload_dir
+        else:
+            # Save directly into the student's persistent uploads directory
+            tmp_dir = base_upload_dir
         keep_uploads = True
     else:
         # Create ephemeral temp dir under TEMP_DIR if configured, else system temp
@@ -278,12 +289,26 @@ async def chat_stream_endpoint(
     if files:
         persist_root = getattr(settings, 'PERSIST_DIR', None)
         temp_root = getattr(settings, 'TEMP_DIR', None)
-        if session_id and persist_root:
-            upload_dir = os.path.join(persist_root, str(student_id), f"uploads_{session_id}")
-            os.makedirs(upload_dir, exist_ok=True)
-            tmp_dir = upload_dir
+        # If PERSIST_DIR is configured, persist uploads under PERSIST_DIR/{student_id}/uploaded_files/
+        if persist_root:
+            base_upload_dir = os.path.join(persist_root, str(student_id), "uploaded_files")
+            try:
+                os.makedirs(base_upload_dir, exist_ok=True)
+            except Exception:
+                logger.debug(f"Failed to ensure base_upload_dir exists: {base_upload_dir}")
+            if session_id:
+                upload_dir = os.path.join(base_upload_dir, f"uploads_{session_id}")
+                try:
+                    os.makedirs(upload_dir, exist_ok=True)
+                except Exception:
+                    logger.debug(f"Failed to ensure upload_dir exists: {upload_dir}")
+                tmp_dir = upload_dir
+            else:
+                tmp_dir = base_upload_dir
+            # Persistently store uploaded files for this student
             saved_paths = await save_uploaded_files(files, tmp_dir)
         else:
+            # Fallback to ephemeral temp directories
             if temp_root:
                 try:
                     os.makedirs(temp_root, exist_ok=True)

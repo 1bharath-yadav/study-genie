@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Any, Dict
+from typing import Any, Dict, List
 from app.services import activity_service
 from app.core.security import get_current_student_id
+from app.services.db import create_supabase_client
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -197,22 +198,81 @@ async def get_summary(student_identifier: str, days: int = 30, current_student_i
 async def get_weaknesses(student_identifier: str, days: int = 30, current_student_id: str = Depends(get_current_student_id)):
 	if student_identifier != current_student_id:
 		raise HTTPException(status_code=403, detail='Forbidden')
-	data = await activity_service.get_weakness_analysis(current_student_id, days)
-	return {'success': True, 'data': data}
+
+	raw = await activity_service.get_weakness_analysis(current_student_id, days)
+
+	# Normalize to frontend-expected shape: { subjects: [...], concepts: [...] }
+	subjects_raw = raw.get('subject_weaknesses', []) or []
+	concepts_raw = raw.get('concept_weaknesses', []) or []
+
+	client = create_supabase_client()
+
+	# Helper to resolve names for ids (best-effort)
+	def resolve_subject_name(sid: str) -> str:
+		try:
+			if not client:
+				return str(sid)
+			resp = client.table('subjects').select('llm_suggested_subject_name, subject_id').eq('subject_id', int(sid)).limit(1).execute()
+			if getattr(resp, 'data', None):
+				row = resp.data[0]
+				return row.get('llm_suggested_subject_name') or str(sid)
+			return str(sid)
+		except Exception:
+			return str(sid)
+
+	def resolve_concept_name(cid: str) -> str:
+		try:
+			if not client:
+				return str(cid)
+			resp = client.table('concepts').select('llm_suggested_concept_name, concept_id').eq('concept_id', int(cid)).limit(1).execute()
+			if getattr(resp, 'data', None):
+				row = resp.data[0]
+				return row.get('llm_suggested_concept_name') or str(cid)
+			return str(cid)
+		except Exception:
+			return str(cid)
+
+	subjects: List[Dict[str, Any]] = []
+	for s in subjects_raw:
+		sid = s.get('subject_id')
+		subjects.append({
+			'subject_id': sid,
+			'name': resolve_subject_name(sid) if sid is not None else None,
+			'weakness_score': s.get('weakness_score'),
+			'avg_score': s.get('avg_score'),
+			'attempts': s.get('count')
+		})
+
+	concepts: List[Dict[str, Any]] = []
+	for c in concepts_raw:
+		cid = c.get('concept_id')
+		concepts.append({
+			'concept_id': cid,
+			'name': resolve_concept_name(cid) if cid is not None else None,
+			'avg_score': c.get('avg_score'),
+			'attempts': c.get('count'),
+			'weakness_score': c.get('weakness_score'),
+		})
+
+	return {'success': True, 'data': {'subjects': subjects, 'concepts': concepts}}
 
 
 @router.get('/{student_identifier}/weekly-trends')
 async def get_weekly_trends_endpoint(student_identifier: str, weeks: int = 4, current_student_id: str = Depends(get_current_student_id)):
 	if student_identifier != current_student_id:
 		raise HTTPException(status_code=403, detail='Forbidden')
+
 	data = await activity_service.get_weekly_trends(current_student_id, weeks)
-	return {'success': True, 'data': data}
+	# activity_service returns {'weeks': [...]}; frontend expects an array
+	weeks_list = data.get('weeks', []) if isinstance(data, dict) else []
+	return {'success': True, 'data': weeks_list}
 
 
 @router.get('/{student_identifier}/monthly-trends')
 async def get_monthly_trends_endpoint(student_identifier: str, months: int = 3, current_student_id: str = Depends(get_current_student_id)):
 	if student_identifier != current_student_id:
 		raise HTTPException(status_code=403, detail='Forbidden')
+
 	data = await activity_service.get_monthly_trends(current_student_id, months)
 	return {'success': True, 'data': data}
 # async def get_weekly_trends_endpoint(

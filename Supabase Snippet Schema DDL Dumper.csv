@@ -62,6 +62,20 @@ ALTER TABLE public.model_preferences ADD CONSTRAINT model_preferences_pkey PRIMA
 ALTER TABLE public.model_preferences ADD CONSTRAINT model_preferences_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
 CREATE INDEX idx_model_prefs_student ON public.model_preferences USING btree (student_id);
 ALTER TABLE public.model_preferences OWNER TO postgres;
+"CREATE TABLE public.student_activity (\n  activity_id bigint DEFAULT nextval('student_activity_activity_id_seq'::regclass) NOT NULL,
+  student_id character varying(100) NOT NULL,
+  activity_type character varying(100) NOT NULL,
+  related_subject_id bigint,
+  related_chapter_id bigint,
+  related_concept_id bigint,
+  payload jsonb NOT NULL,
+  score numeric(5,2) DEFAULT NULL::numeric,
+  time_spent_seconds integer,
+  created_at timestamp with time zone DEFAULT now()\n);"
+ALTER TABLE public.student_activity ADD CONSTRAINT student_activity_pkey PRIMARY KEY (activity_id);
+ALTER TABLE public.student_activity ADD CONSTRAINT student_activity_student_id_fkey FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE;
+"CREATE INDEX idx_student_activity_student_date ON public.student_activity USING btree (student_id, created_at DESC);"
+ALTER TABLE public.student_activity OWNER TO postgres;
 "CREATE TABLE public.students (\n  student_id character varying(100) NOT NULL,
   username character varying(50) NOT NULL,
   email character varying(100) NOT NULL,

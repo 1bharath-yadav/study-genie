@@ -330,16 +330,60 @@ Progress: performance metrics and analytics
 ## 🚀 Deployment & Scalability
 
 ### **Development Environment**
-```bash
-# Backend setup
-uv sync                    # Install dependencies
-uvicorn app.main:app --reload  # Start development server
+The project has had a few recent updates (Sept 2025):
 
-# Frontend setup
-cd frontend
-npm install               # Install dependencies
-npm run dev              # Start development server
+- Redis is used by the backend for caching/session features. The repository contains an `uv.lock` and uses the `uv` helper (if installed) to manage and run the backend. You can use either the `uv` helper or standard Python tooling (pip/venv).
+
+Use one of the following workflows depending on what you have installed locally.
+
+1) Using the `uv` helper (recommended if you're already using `uv`):
+
+```bash
+# Install Python dependencies declared for the project
+uv sync
+
+# Run migrations (Supabase) if using Supabase locally or remote
+supabase db push
+
+# Start the backend (auto-reload in dev)
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+2) Using a standard Python virtual environment and pip:
+
+```bash
+# create and activate venv (example)
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Start backend with uvicorn
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Frontend (Vite + React):
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Notes and environment variables required for local development:
+
+- `DATABASE_URL` — Postgres connection string (used by backend)
+- `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (if using Supabase features locally)
+- `REDIS_URL` — connection string for Redis (e.g. redis://localhost:6379)
+- `HUGGING_FACE_API_KEY` or relevant provider keys (for model/embedding access)
+- Any other provider keys used in `app/config.py` or `.env`
+
+If you don't have Redis locally you can run a lightweight container:
+
+```bash
+docker run -p 6379:6379 -d redis:7-alpine
+```
+
+If you use Supabase locally, run `supabase start` or run `supabase db push` to apply migrations. See `supabase/migrations/` for SQL migration files.
 
 ### **Production Considerations**
 - **Containerization**: Docker for consistent deployments
@@ -529,4 +573,3 @@ StudyGenie represents more than just a technical project—it's an investment in
 
 ---
 
-*This presentation provides a comprehensive overview of StudyGenie's capabilities, architecture, and potential impact. The platform demonstrates the successful integration of modern AI technologies with educational best practices, creating a solution that addresses real-world learning challenges while providing a foundation for future educational innovation.*

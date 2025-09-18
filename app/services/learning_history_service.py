@@ -92,8 +92,35 @@ def save_learning_activity(student_id: str, activity: LearningActivityRequest) -
     """
     client = get_supabase_client()
     try:
-        # Attempt to resolve a concept_id if concept_name provided
+        # Best-effort resolution of subject -> chapter -> concept IDs using
+        # the llm_suggested_* name columns.
+        subject_id = None
+        chapter_id = None
         concept_id = None
+
+        if activity.subject_name:
+            try:
+                resp = client.table('subjects').select('subject_id').eq('student_id', student_id).ilike('llm_suggested_subject_name', activity.subject_name).limit(1).execute()
+                rows = safe_extract_data(resp)
+                if rows:
+                    subject_id = rows[0].get('subject_id')
+            except Exception:
+                subject_id = None
+
+        if activity.chapter_name:
+            try:
+                qb = client.table('chapters').select('chapter_id')
+                qb = qb.eq('student_id', student_id)
+                if subject_id:
+                    qb = qb.eq('subject_id', subject_id)
+                qb = qb.ilike('llm_suggested_chapter_name', activity.chapter_name).limit(1)
+                resp = qb.execute()
+                rows = safe_extract_data(resp)
+                if rows:
+                    chapter_id = rows[0].get('chapter_id')
+            except Exception:
+                chapter_id = None
+
         if activity.concept_name:
             try:
                 resp = client.table('concepts').select('concept_id').eq('student_id', student_id).ilike('llm_suggested_concept_name', activity.concept_name).limit(1).execute()
@@ -101,14 +128,13 @@ def save_learning_activity(student_id: str, activity: LearningActivityRequest) -
                 if rows:
                     concept_id = rows[0].get('concept_id')
             except Exception:
-                # best-effort: ignore resolution failures
                 concept_id = None
 
         score = None
         if activity.total_questions and activity.total_questions > 0:
             score = round((activity.correct_answers / activity.total_questions) * 100, 2)
 
-        activity_data = {
+        payload = {
             'subject_name': activity.subject_name,
             'chapter_name': activity.chapter_name,
             'concept_name': activity.concept_name,
@@ -116,22 +142,23 @@ def save_learning_activity(student_id: str, activity: LearningActivityRequest) -
             'content_source': activity.content_source,
             'difficulty_level': activity.difficulty_level.value if hasattr(activity.difficulty_level, 'value') else str(activity.difficulty_level),
             'correct_answers': activity.correct_answers,
-            'total_questions': activity.total_questions
+            'total_questions': activity.total_questions,
         }
 
         row = {
             'student_id': student_id,
-            'concept_id': concept_id,
             'activity_type': activity.activity_type.value if hasattr(activity.activity_type, 'value') else str(activity.activity_type),
-            'activity_data': activity_data,
+            'related_subject_id': subject_id,
+            'related_chapter_id': chapter_id,
+            'related_concept_id': concept_id,
+            'payload': payload,
             'score': score,
-            'time_spent': activity.time_spent,
-            'completed_at': datetime.utcnow().isoformat()
+            'time_spent_seconds': activity.time_spent,
+            'created_at': datetime.utcnow().isoformat()
         }
 
-        insert_resp = client.table('learning_activities').insert(row).execute()
+        insert_resp = client.table('student_activity').insert(row).execute()
         inserted = safe_extract_data(insert_resp)
-        # return the inserted row if available
         if inserted and len(inserted) > 0:
             return inserted[0]
         return row
