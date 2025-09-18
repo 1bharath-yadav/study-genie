@@ -24,11 +24,9 @@ dependencies = [
 	"google-generativeai>=0.8.5",
 	"cryptography>=3.4.8",
 	"python-jose>=3.5.0",
-	"pyjwt>=2.10.1",
 	"supabase>=2.7.4",
 	"postgrest>=0.16.8",
 	"storage3>=0.7.7",
-	"gotrue>=2.8.2",
 	"pydantic-ai>=1.0.3",
 	"pillow>=11.3.0",
 	"langchain-cohere>=0.4.6",
@@ -48,11 +46,4 @@ dependencies = [
 	"redis>=6.4.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-	"pytest",
-	"pytest-asyncio",
-	"pytest-cov",
-	"black",
-	"pre-commit",
-]
+
